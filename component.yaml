@@ -1,0 +1,32 @@
+name: network-recon
+version: 1.0.0
+type: agent
+description: |
+  Network reconnaissance agent that discovers hosts, services, and technologies
+  on target networks. Performs host discovery, port scanning, HTTP probing,
+  and domain enumeration. Writes all discoveries to the GraphRAG knowledge graph.
+
+capabilities:
+  - host-discovery
+  - port-scanning
+  - service-detection
+  - technology-fingerprinting
+  - domain-enumeration
+
+target_types:
+  - network
+  - subnet
+  - domain
+
+required_tools:
+  - nmap
+  - httpx
+
+optional_tools:
+  - subfinder
+  - amass
+
+llm_slots:
+  - name: primary
+    description: Used for intelligence generation
+    required: false
