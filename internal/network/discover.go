@@ -123,9 +123,6 @@ func (d *discoverer) DiscoverLocalSubnet(ctx context.Context) (string, error) {
 	return networkCIDR, nil
 }
 
-// GetDomainMappings is implemented in hosts.go.
-// See hosts.go for the full implementation that parses /etc/hosts.
-
 // isClass192 checks if an IP is in the 192.168.0.0/16 range.
 func isClass192(ip net.IP) bool {
 	return ip[0] == 192 && ip[1] == 168

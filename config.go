@@ -11,7 +11,7 @@ import (
 type ReconConfig struct {
 	// Network targeting
 	Subnet  string   // CIDR notation, auto-discovered if empty
-	Domains []string // Domain names, from /etc/hosts if empty
+	Domains []string // Domain names for reconnaissance
 
 	// Phase control
 	SkipPhases []string // Phases to skip: "discover", "probe", "domain"

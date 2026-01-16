@@ -49,18 +49,8 @@ func executeRecon(ctx context.Context, h agent.Harness, task agent.Task) (agent.
 		}
 	}
 
-	// Auto-discover domains from /etc/hosts if not provided
-	if len(cfg.Domains) == 0 {
-		logger.InfoContext(ctx, "auto-discovering domains from /etc/hosts")
-		discovery := network.NewNetworkDiscovery()
-		mappings, err := discovery.GetDomainMappings(ctx)
-		if err != nil {
-			logger.WarnContext(ctx, "failed to get domain mappings", "error", err)
-		} else {
-			cfg.Domains = extractDomainNames(mappings)
-			logger.InfoContext(ctx, "discovered domains", "count", len(cfg.Domains))
-		}
-	}
+	// Note: Domains must be provided via configuration or mission context.
+	// We no longer auto-discover from /etc/hosts as it's not useful for real reconnaissance.
 
 	// Create reconnaissance runner
 	runner := recon.NewReconRunner(h)
@@ -113,52 +103,6 @@ func executeRecon(ctx context.Context, h agent.Harness, task agent.Task) (agent.
 		Output:   output,
 		Metadata: metadata,
 	}, nil
-}
-
-// extractDomainNames extracts unique domain names from hostname-to-IP mappings.
-func extractDomainNames(mappings map[string][]string) []string {
-	seen := make(map[string]bool)
-	var domains []string
-
-	for hostname := range mappings {
-		// Skip localhost and simple hostnames without dots
-		if hostname == "localhost" || !containsDot(hostname) {
-			continue
-		}
-
-		// Extract the domain suffix (everything after first dot)
-		// e.g., "server.example.local" -> "example.local"
-		firstDot := indexOfDot(hostname)
-		if firstDot != -1 && firstDot < len(hostname)-1 {
-			domain := hostname[firstDot+1:]
-			if !seen[domain] && containsDot(domain) {
-				seen[domain] = true
-				domains = append(domains, domain)
-			}
-		}
-	}
-
-	return domains
-}
-
-// containsDot returns true if the string contains a dot character.
-func containsDot(s string) bool {
-	for _, c := range s {
-		if c == '.' {
-			return true
-		}
-	}
-	return false
-}
-
-// indexOfDot returns the index of the first dot, or -1 if not found.
-func indexOfDot(s string) int {
-	for i, c := range s {
-		if c == '.' {
-			return i
-		}
-	}
-	return -1
 }
 
 // formatReconOutput generates the output string for the reconnaissance results.
