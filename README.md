@@ -10,11 +10,44 @@ Network Recon provides automated network discovery capabilities for security ass
 
 ### Key Capabilities
 
-- **Host Discovery**: Identify live hosts on target subnets
-- **Port Scanning**: Discover open ports and services
-- **Service Detection**: Fingerprint services running on discovered ports
-- **Technology Fingerprinting**: Identify web technologies and frameworks
-- **Domain Enumeration**: Discover subdomains and DNS records
+- **Host Discovery**: Identify live hosts on target subnets using ICMP ping sweeps, ARP scanning, and TCP SYN probes
+- **Port Scanning**: Discover open ports (1-1000 by default) with service version detection
+- **Service Detection**: Fingerprint services running on discovered ports via banner grabbing
+- **Technology Fingerprinting**: Identify web technologies, frameworks, and server software
+- **Domain Enumeration**: Discover subdomains via passive and active enumeration techniques
+
+### Supported Target Types
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `network` | IP range or CIDR block | `192.168.1.0/24` |
+| `subnet` | Subnet specification | `10.0.0.0/16` |
+| `domain` | Domain name for enumeration | `example.com` |
+
+## Requirements
+
+### System Dependencies
+
+The following tools must be installed and available in your PATH:
+
+| Tool | Required | Purpose | Installation |
+|------|----------|---------|--------------|
+| **nmap** | Yes | Host discovery and port scanning | `apt install nmap` / `brew install nmap` |
+| **httpx** | Yes | HTTP probing and technology detection | `go install github.com/projectdiscovery/httpx/cmd/httpx@latest` |
+| **subfinder** | No | Subdomain enumeration | `go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest` |
+| **amass** | No | Comprehensive DNS enumeration | `go install github.com/owasp-amass/amass/v4/...@master` |
+| **masscan** | No | Fast port scanning fallback | `apt install masscan` / `brew install masscan` |
+
+### Gibson Platform
+
+- Gibson v0.20.0 or later
+- SDK v0.20.0 or later
+
+### Optional: LLM Provider
+
+For intelligence generation features, configure an LLM provider:
+- Anthropic Claude (recommended)
+- OpenAI GPT-4
 
 ## Architecture
 
@@ -63,9 +96,22 @@ Network Recon provides automated network discovery capabilities for security ass
 +----------------------------------------------------------+
 ```
 
+## Quick Start
+
+```bash
+# 1. Install the agent
+gibson agent install git@github.com:zero-day-ai/network-recon-agent.git
+
+# 2. Create a target
+gibson target add my-network --type network --connection '{"address":"192.168.1.0/24"}'
+
+# 3. Run reconnaissance
+gibson agent run network-recon --target my-network
+```
+
 ## Installation
 
-### Using Gibson CLI
+### Using Gibson CLI (Recommended)
 
 ```bash
 gibson agent install git@github.com:zero-day-ai/network-recon-agent.git
@@ -77,11 +123,32 @@ gibson agent install git@github.com:zero-day-ai/network-recon-agent.git
 git clone git@github.com:zero-day-ai/network-recon-agent.git
 cd network-recon
 make build
+gibson agent build .
 ```
 
 ## Usage
 
-### Running as gRPC Service
+### Via Gibson CLI (Recommended)
+
+```bash
+# Run against a configured target
+gibson agent run network-recon --target my-network
+
+# Run as part of a mission
+gibson mission run -f recon-mission.yaml --target my-network
+```
+
+### Creating Targets
+
+```bash
+# Network/subnet target
+gibson target add home-network --type network --connection '{"address":"192.168.50.0/24"}'
+
+# Domain target
+gibson target add example-domain --type domain --connection '{"domain":"example.com"}'
+```
+
+### Running as Standalone gRPC Service (Development)
 
 ```bash
 # Start with default port (50051)
@@ -92,16 +159,6 @@ make build
 
 # Or via environment variable
 AGENT_PORT=50053 ./network-recon
-```
-
-### Integration with Gibson
-
-```bash
-# Run network reconnaissance
-gibson mission run --agent network-recon --target network://192.168.1.0/24
-
-# With specific domains
-gibson mission run --agent network-recon --target domain://example.com
 ```
 
 ## Configuration
