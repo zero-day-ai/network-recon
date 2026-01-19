@@ -155,13 +155,13 @@ Errors: %d
 
 	// Add JSON output for machine parsing
 	jsonOutput, _ := json.MarshalIndent(map[string]any{
-		"subnet":              cfg.Subnet,
-		"duration":            result.Duration.String(),
-		"total_hosts":         result.TotalHosts,
-		"total_ports":         result.TotalPorts,
-		"total_endpoints":     result.TotalEndpoints,
-		"phases":              len(result.Phases),
-		"has_intelligence":    intel != nil,
+		"subnet":           cfg.Subnet,
+		"duration":         result.Duration.String(),
+		"total_hosts":      result.TotalHosts,
+		"total_ports":      result.TotalPorts,
+		"total_endpoints":  result.TotalEndpoints,
+		"phases":           len(result.Phases),
+		"has_intelligence": intel != nil,
 	}, "", "  ")
 
 	output += fmt.Sprintf(`

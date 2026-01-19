@@ -162,8 +162,8 @@ func TestParseIntelligenceResponse_MissingFields(t *testing.T) {
 
 func TestParseIntelligenceResponse_InvalidConfidence(t *testing.T) {
 	tests := []struct {
-		name              string
-		confidence        float64
+		name               string
+		confidence         float64
 		expectedConfidence float64
 	}{
 		{"Negative confidence", -0.5, 0.0},

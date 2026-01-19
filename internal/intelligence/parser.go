@@ -11,11 +11,11 @@ import (
 // llmResponse represents the expected JSON structure from LLM completion.
 // This mirrors the Intelligence struct but uses pointers for partial parsing.
 type llmResponse struct {
-	Summary        *string            `json:"summary"`
-	RiskAssessment *string            `json:"risk_assessment"`
-	AttackPaths    []llmAttackPath    `json:"attack_paths"`
+	Summary         *string             `json:"summary"`
+	RiskAssessment  *string             `json:"risk_assessment"`
+	AttackPaths     []llmAttackPath     `json:"attack_paths"`
 	Recommendations []llmRecommendation `json:"recommendations"`
-	Confidence     *float64           `json:"confidence"`
+	Confidence      *float64            `json:"confidence"`
 }
 
 // llmAttackPath represents an attack path in the LLM response.

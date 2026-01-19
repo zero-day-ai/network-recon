@@ -33,11 +33,11 @@ type mockHarness struct {
 	storeGraphError   error
 
 	// Call tracking
-	graphQueryCalls   int
-	llmCompleteCalls  int
-	storeGraphCalls   int
-	lastLLMMessages   []llm.Message
-	lastGraphBatch    *graphrag.Batch
+	graphQueryCalls  int
+	llmCompleteCalls int
+	storeGraphCalls  int
+	lastLLMMessages  []llm.Message
+	lastGraphBatch   *graphrag.Batch
 }
 
 func newMockHarness() *mockHarness {
@@ -471,12 +471,12 @@ func TestBuildPhasePrompt(t *testing.T) {
 
 func TestBuildSummaryPrompt(t *testing.T) {
 	tests := []struct {
-		name             string
-		missionID        string
-		phasesCompleted  []string
-		totalNodes       int
-		entitiesByPhase  interface{}
-		wantErr          bool
+		name            string
+		missionID       string
+		phasesCompleted []string
+		totalNodes      int
+		entitiesByPhase interface{}
+		wantErr         bool
 	}{
 		{
 			name:            "Valid mission summary",

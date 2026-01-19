@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"text/template"
 
 	"github.com/zero-day-ai/sdk/agent"
 	"github.com/zero-day-ai/sdk/graphrag"
+	"github.com/zero-day-ai/sdk/graphrag/id"
 	"github.com/zero-day-ai/sdk/schema"
 	"github.com/zero-day-ai/sdk/tool"
 )
@@ -54,15 +54,20 @@ type TaxonomyExtractor interface {
 // DefaultTaxonomyExtractor implements TaxonomyExtractor using the agent harness
 // for tool schema retrieval and knowledge graph storage.
 type DefaultTaxonomyExtractor struct {
-	harness agent.Harness
-	logger  *slog.Logger
+	harness   agent.Harness
+	logger    *slog.Logger
+	registry  graphrag.NodeTypeRegistry
+	generator *id.DeterministicGenerator
 }
 
 // NewTaxonomyExtractor creates a new taxonomy extractor that uses the provided harness.
 func NewTaxonomyExtractor(harness agent.Harness) TaxonomyExtractor {
+	registry := graphrag.Registry() // Get global registry
 	return &DefaultTaxonomyExtractor{
-		harness: harness,
-		logger:  harness.Logger(),
+		harness:   harness,
+		logger:    harness.Logger(),
+		registry:  registry,
+		generator: id.NewGenerator(registry),
 	}
 }
 
@@ -197,20 +202,36 @@ func (e *DefaultTaxonomyExtractor) extractNodesFromMapping(
 
 	// Process each item
 	for _, item := range items {
-		// Merge item data with context
-		fullData := mergeMaps(item, contextData)
+		// Extract identifying properties from item using JSONPath
+		identProps := make(map[string]any)
+		for propName, jsonPath := range mapping.IdentifyingProperties {
+			value := extractJSONPath(item, jsonPath)
+			if value == nil {
+				e.logger.WarnContext(context.Background(), "missing identifying property",
+					"node_type", mapping.NodeType,
+					"property", propName,
+					"json_path", jsonPath)
+				continue
+			}
+			identProps[propName] = value
+		}
 
-		// Build node ID from template
-		nodeID, err := evaluateTemplate(mapping.IDTemplate, fullData)
-		if err != nil {
-			e.logger.WarnContext(context.Background(), "failed to evaluate ID template",
-				"template", mapping.IDTemplate,
-				"error", err)
+		// Skip if we don't have all identifying properties
+		if len(identProps) != len(mapping.IdentifyingProperties) {
+			e.logger.DebugContext(context.Background(), "skipping node due to missing identifying properties",
+				"node_type", mapping.NodeType,
+				"expected_count", len(mapping.IdentifyingProperties),
+				"found_count", len(identProps))
 			continue
 		}
 
-		// Skip if empty ID (may be filtered out)
-		if nodeID == "" {
+		// Generate deterministic ID
+		nodeID, err := e.generator.Generate(mapping.NodeType, identProps)
+		if err != nil {
+			e.logger.WarnContext(context.Background(), "failed to generate node ID",
+				"node_type", mapping.NodeType,
+				"properties", identProps,
+				"error", err)
 			continue
 		}
 
@@ -235,18 +256,10 @@ func (e *DefaultTaxonomyExtractor) extractNodesFromMapping(
 
 		// Create relationships
 		for _, rel := range mapping.Relationships {
-			fromID, err := evaluateTemplate(rel.FromTemplate, fullData)
+			fromID, toID, err := e.resolveRelationshipIDs(rel, item, nodeID)
 			if err != nil {
-				e.logger.WarnContext(context.Background(), "failed to evaluate from template",
-					"template", rel.FromTemplate,
-					"error", err)
-				continue
-			}
-
-			toID, err := evaluateTemplate(rel.ToTemplate, fullData)
-			if err != nil {
-				e.logger.WarnContext(context.Background(), "failed to evaluate to template",
-					"template", rel.ToTemplate,
+				e.logger.WarnContext(context.Background(), "failed to resolve relationship IDs",
+					"relationship_type", rel.Type,
 					"error", err)
 				continue
 			}
@@ -271,6 +284,58 @@ func (e *DefaultTaxonomyExtractor) extractNodesFromMapping(
 	}
 
 	return count, nil
+}
+
+// resolveRelationshipIDs resolves the from and to node IDs for a relationship.
+// Handles "self" references and generates deterministic IDs for other node types.
+func (e *DefaultTaxonomyExtractor) resolveRelationshipIDs(
+	rel schema.RelationshipMapping,
+	item map[string]any,
+	currentNodeID string,
+) (fromID, toID string, err error) {
+	// Handle "from" node
+	if rel.From.Type == "self" {
+		fromID = currentNodeID
+	} else {
+		// Extract properties for the from node
+		fromProps := make(map[string]any)
+		for propName, jsonPath := range rel.From.Properties {
+			value := extractJSONPath(item, jsonPath)
+			if value == nil {
+				return "", "", fmt.Errorf("missing property %q for from node type %q", propName, rel.From.Type)
+			}
+			fromProps[propName] = value
+		}
+
+		// Generate deterministic ID
+		fromID, err = e.generator.Generate(rel.From.Type, fromProps)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to generate from ID: %w", err)
+		}
+	}
+
+	// Handle "to" node
+	if rel.To.Type == "self" {
+		toID = currentNodeID
+	} else {
+		// Extract properties for the to node
+		toProps := make(map[string]any)
+		for propName, jsonPath := range rel.To.Properties {
+			value := extractJSONPath(item, jsonPath)
+			if value == nil {
+				return "", "", fmt.Errorf("missing property %q for to node type %q", propName, rel.To.Type)
+			}
+			toProps[propName] = value
+		}
+
+		// Generate deterministic ID
+		toID, err = e.generator.Generate(rel.To.Type, toProps)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to generate to ID: %w", err)
+		}
+	}
+
+	return fromID, toID, nil
 }
 
 // extractTaxonomyFromSchema recursively walks a JSON schema and extracts TaxonomyMapping instances.
@@ -313,35 +378,6 @@ func extractValue(data map[string]any, path string) any {
 	}
 
 	return current
-}
-
-// evaluateTemplate evaluates a template string with the given data.
-// Supports both {.field} and {{.field}} syntax, e.g., "host:{.ip}" or "host:{{.ip}}".
-func evaluateTemplate(tmplStr string, data map[string]any) (string, error) {
-	// Convert {.field} syntax to {{.field}} for Go template compatibility
-	if strings.Contains(tmplStr, "{.") && !strings.Contains(tmplStr, "{{") {
-		tmplStr = strings.ReplaceAll(tmplStr, "{.", "{{.")
-		tmplStr = strings.ReplaceAll(tmplStr, "}", "}}")
-		// Fix double-closing braces that might have been created
-		tmplStr = strings.ReplaceAll(tmplStr, "}}}}", "}}")
-	}
-
-	// If template doesn't contain {{, return as-is
-	if !strings.Contains(tmplStr, "{{") {
-		return tmplStr, nil
-	}
-
-	tmpl, err := template.New("id").Parse(tmplStr)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse template: %w", err)
-	}
-
-	var buf strings.Builder
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return "", fmt.Errorf("failed to execute template: %w", err)
-	}
-
-	return buf.String(), nil
 }
 
 // mergeMaps merges multiple maps into a new map, with later maps overwriting earlier ones.
