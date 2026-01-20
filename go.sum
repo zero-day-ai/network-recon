@@ -28,8 +28,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/yuin/goldmark v1.1.27/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
 github.com/yuin/goldmark v1.2.1/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
-github.com/zero-day-ai/sdk v0.24.0 h1:nllHBA1yzhbobCqfE9jJxHAtHrWObzZE9fuesdoW6M4=
-github.com/zero-day-ai/sdk v0.24.0/go.mod h1:MCV66chYD61QPYo+FRmKGg2mdWIVwv9Wee1UOGLLJkQ=
+github.com/zero-day-ai/sdk v0.25.0 h1:nyUOCQCWWtNJZ/lmv9GjFrDpJ4+TTb3owCl27z5zfy0=
+github.com/zero-day-ai/sdk v0.25.0/go.mod h1:MCV66chYD61QPYo+FRmKGg2mdWIVwv9Wee1UOGLLJkQ=
 go.etcd.io/etcd/api/v3 v3.5.18 h1:Q4oDAKnmwqTo5lafvB+afbgCDF7E35E4EYV2g+FNGhs=
 go.etcd.io/etcd/api/v3 v3.5.18/go.mod h1:uY03Ob2H50077J7Qq0DeehjM/A9S8PhVfbQ1mSaMopU=
 go.etcd.io/etcd/client/pkg/v3 v3.5.18 h1:mZPOYw4h8rTk7TeJ5+3udUkfVGBqc+GCjOJYd68QgNM=
