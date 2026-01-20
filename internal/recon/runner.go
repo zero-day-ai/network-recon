@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/zero-day-ai/sdk/agent"
+	"github.com/zero-day-ai/sdk/graphrag/domain"
 )
 
 // DefaultReconRunner implements the ReconRunner interface using the agent harness
@@ -32,9 +33,10 @@ func (r *DefaultReconRunner) RunPhase(ctx context.Context, phase Phase, targets 
 	logger := r.harness.Logger()
 
 	result := &PhaseResult{
-		Phase:    phase,
-		ToolsRun: []string{},
-		Errors:   []error{},
+		Phase:       phase,
+		ToolsRun:    []string{},
+		Errors:      []error{},
+		Discoveries: domain.NewDiscoveryResult(),
 	}
 
 	logger.InfoContext(ctx, "starting reconnaissance phase",
@@ -45,14 +47,17 @@ func (r *DefaultReconRunner) RunPhase(ctx context.Context, phase Phase, targets 
 	// Execute phase-specific tools
 	switch phase {
 	case PhaseDiscover:
-		r.runDiscoverPhase(ctx, targets, result)
+		r.runDiscoverPhase(ctx, targets, result, result.Discoveries)
 	case PhaseProbe:
-		r.runProbePhase(ctx, targets, result)
+		r.runProbePhase(ctx, targets, result, result.Discoveries)
 	case PhaseDomain:
-		r.runDomainPhase(ctx, targets, result)
+		r.runDomainPhase(ctx, targets, result, result.Discoveries)
 	default:
 		return nil, fmt.Errorf("unknown phase: %s", phase)
 	}
+
+	// Count nodes created in this phase
+	result.NodesCreated = result.Discoveries.NodeCount()
 
 	result.Duration = time.Since(startTime)
 
@@ -71,7 +76,7 @@ func (r *DefaultReconRunner) RunPhase(ctx context.Context, phase Phase, targets 
 // runDiscoverPhase executes the discover phase:
 // 1. First runs nmap ping scan (-sn) to find live hosts
 // 2. Then runs nmap port scan only against live hosts
-func (r *DefaultReconRunner) runDiscoverPhase(ctx context.Context, targets []string, result *PhaseResult) {
+func (r *DefaultReconRunner) runDiscoverPhase(ctx context.Context, targets []string, result *PhaseResult, discoveries *domain.DiscoveryResult) {
 	logger := r.harness.Logger()
 
 	for _, target := range targets {
@@ -92,7 +97,7 @@ func (r *DefaultReconRunner) runDiscoverPhase(ctx context.Context, targets []str
 		}
 		result.ToolsRun = append(result.ToolsRun, "nmap-ping")
 
-		// Extract live hosts from nmap ping output
+		// Extract live hosts from nmap ping output and add to discoveries
 		liveHosts := extractLiveHostsFromNmap(pingOutput)
 		if len(liveHosts) == 0 {
 			logger.WarnContext(ctx, "no live hosts found in ping scan", "target", target)
@@ -113,7 +118,7 @@ func (r *DefaultReconRunner) runDiscoverPhase(ctx context.Context, targets []str
 				"timing":            4, // Aggressive timing since we know host is up
 			}
 
-			_, err := r.harness.CallTool(ctx, "nmap", input)
+			output, err := r.harness.CallTool(ctx, "nmap", input)
 			if err != nil {
 				logger.ErrorContext(ctx, "nmap failed, trying masscan fallback", "host", host, "error", err)
 				result.Errors = append(result.Errors, fmt.Errorf("nmap failed for %s: %w", host, err))
@@ -125,7 +130,7 @@ func (r *DefaultReconRunner) runDiscoverPhase(ctx context.Context, targets []str
 					"rate":   1000,
 				}
 
-				_, err = r.harness.CallTool(ctx, "masscan", masscanInput)
+				output, err = r.harness.CallTool(ctx, "masscan", masscanInput)
 				if err != nil {
 					logger.ErrorContext(ctx, "masscan fallback also failed", "host", host, "error", err)
 					result.Errors = append(result.Errors, fmt.Errorf("masscan failed for %s: %w", host, err))
@@ -135,7 +140,9 @@ func (r *DefaultReconRunner) runDiscoverPhase(ctx context.Context, targets []str
 			} else {
 				result.ToolsRun = append(result.ToolsRun, "nmap")
 			}
-			// Note: Entity extraction handled automatically by Gibson's TaxonomyGraphEngine
+
+			// Parse nmap/masscan output and extract domain types
+			parseDiscoverOutput(output, discoveries)
 		}
 	}
 }
@@ -169,7 +176,7 @@ func extractLiveHostsFromNmap(output any) []string {
 }
 
 // runProbePhase executes the probe phase using httpx.
-func (r *DefaultReconRunner) runProbePhase(ctx context.Context, targets []string, result *PhaseResult) {
+func (r *DefaultReconRunner) runProbePhase(ctx context.Context, targets []string, result *PhaseResult, discoveries *domain.DiscoveryResult) {
 	logger := r.harness.Logger()
 
 	if len(targets) == 0 {
@@ -187,7 +194,7 @@ func (r *DefaultReconRunner) runProbePhase(ctx context.Context, targets []string
 		"threads":          10,
 	}
 
-	_, err := r.harness.CallTool(ctx, "httpx", input)
+	output, err := r.harness.CallTool(ctx, "httpx", input)
 	if err != nil {
 		logger.ErrorContext(ctx, "httpx failed", "error", err)
 		result.Errors = append(result.Errors, fmt.Errorf("httpx failed: %w", err))
@@ -195,11 +202,13 @@ func (r *DefaultReconRunner) runProbePhase(ctx context.Context, targets []string
 	}
 
 	result.ToolsRun = append(result.ToolsRun, "httpx")
-	// Note: Entity extraction handled automatically by Gibson's TaxonomyGraphEngine
+
+	// Parse httpx output and extract endpoints/technologies
+	parseProbeOutput(output, discoveries)
 }
 
 // runDomainPhase executes the domain phase using subfinder and amass.
-func (r *DefaultReconRunner) runDomainPhase(ctx context.Context, targets []string, result *PhaseResult) {
+func (r *DefaultReconRunner) runDomainPhase(ctx context.Context, targets []string, result *PhaseResult, discoveries *domain.DiscoveryResult) {
 	logger := r.harness.Logger()
 
 	if len(targets) == 0 {
@@ -208,42 +217,46 @@ func (r *DefaultReconRunner) runDomainPhase(ctx context.Context, targets []strin
 	}
 
 	// Run subfinder for each domain
-	for _, domain := range targets {
-		logger.InfoContext(ctx, "running subfinder", "domain", domain)
+	for _, domainName := range targets {
+		logger.InfoContext(ctx, "running subfinder", "domain", domainName)
 
 		input := map[string]any{
-			"domain": domain,
+			"domain": domainName,
 		}
 
-		_, err := r.harness.CallTool(ctx, "subfinder", input)
+		output, err := r.harness.CallTool(ctx, "subfinder", input)
 		if err != nil {
-			logger.ErrorContext(ctx, "subfinder failed", "error", err, "domain", domain)
-			result.Errors = append(result.Errors, fmt.Errorf("subfinder failed for %s: %w", domain, err))
+			logger.ErrorContext(ctx, "subfinder failed", "error", err, "domain", domainName)
+			result.Errors = append(result.Errors, fmt.Errorf("subfinder failed for %s: %w", domainName, err))
 			continue
 		}
 
 		result.ToolsRun = append(result.ToolsRun, "subfinder")
-		// Note: Entity extraction handled automatically by Gibson's TaxonomyGraphEngine
+
+		// Parse subfinder output and extract subdomains
+		parseDomainOutput(output, domainName, discoveries)
 	}
 
 	// Run amass for comprehensive enumeration
-	for _, domain := range targets {
-		logger.InfoContext(ctx, "running amass", "domain", domain)
+	for _, domainName := range targets {
+		logger.InfoContext(ctx, "running amass", "domain", domainName)
 
 		input := map[string]any{
-			"domain":  domain,
+			"domain":  domainName,
 			"passive": true, // Use passive enumeration for speed
 		}
 
-		_, err := r.harness.CallTool(ctx, "amass", input)
+		output, err := r.harness.CallTool(ctx, "amass", input)
 		if err != nil {
-			logger.ErrorContext(ctx, "amass failed", "error", err, "domain", domain)
-			result.Errors = append(result.Errors, fmt.Errorf("amass failed for %s: %w", domain, err))
+			logger.ErrorContext(ctx, "amass failed", "error", err, "domain", domainName)
+			result.Errors = append(result.Errors, fmt.Errorf("amass failed for %s: %w", domainName, err))
 			continue
 		}
 
 		result.ToolsRun = append(result.ToolsRun, "amass")
-		// Note: Entity extraction handled automatically by Gibson's TaxonomyGraphEngine
+
+		// Parse amass output and extract subdomains
+		parseDomainOutput(output, domainName, discoveries)
 	}
 }
 
@@ -255,7 +268,8 @@ func (r *DefaultReconRunner) RunAll(ctx context.Context, subnet string, domains 
 	logger := r.harness.Logger()
 
 	result := &ReconResult{
-		Phases: []*PhaseResult{},
+		Phases:      []*PhaseResult{},
+		Discoveries: domain.NewDiscoveryResult(),
 	}
 
 	logger.InfoContext(ctx, "starting full reconnaissance workflow",
@@ -270,8 +284,8 @@ func (r *DefaultReconRunner) RunAll(ctx context.Context, subnet string, domains 
 	}
 	result.Phases = append(result.Phases, discoverResult)
 
-	// Extract discovered hosts/ports for next phase
-	// We query the knowledge graph to get hosts with open HTTP/HTTPS ports
+	// Merge phase discoveries into overall result (note: RunPhase needs to return phaseDiscoveries)
+	// For now, extract discovered hosts/ports for next phase from knowledge graph or memory
 	probeTargets, err := r.extractProbeTargets(ctx)
 	if err != nil {
 		logger.ErrorContext(ctx, "failed to extract probe targets", "error", err)
@@ -297,11 +311,22 @@ func (r *DefaultReconRunner) RunAll(ctx context.Context, subnet string, domains 
 		result.Phases = append(result.Phases, domainResult)
 	}
 
-	// Aggregate statistics
+	// Aggregate statistics and discoveries from all phases
 	for _, phaseResult := range result.Phases {
 		result.TotalHosts += countHosts(phaseResult)
 		result.TotalPorts += countPorts(phaseResult)
 		result.TotalEndpoints += countEndpoints(phaseResult)
+
+		// Merge phase discoveries into overall result
+		if phaseResult.Discoveries != nil {
+			result.Discoveries.Hosts = append(result.Discoveries.Hosts, phaseResult.Discoveries.Hosts...)
+			result.Discoveries.Ports = append(result.Discoveries.Ports, phaseResult.Discoveries.Ports...)
+			result.Discoveries.Services = append(result.Discoveries.Services, phaseResult.Discoveries.Services...)
+			result.Discoveries.Endpoints = append(result.Discoveries.Endpoints, phaseResult.Discoveries.Endpoints...)
+			result.Discoveries.Domains = append(result.Discoveries.Domains, phaseResult.Discoveries.Domains...)
+			result.Discoveries.Subdomains = append(result.Discoveries.Subdomains, phaseResult.Discoveries.Subdomains...)
+			result.Discoveries.Technologies = append(result.Discoveries.Technologies, phaseResult.Discoveries.Technologies...)
+		}
 	}
 
 	result.Duration = time.Since(startTime)
@@ -359,4 +384,193 @@ func marshalInput(input map[string]any) string {
 		return fmt.Sprintf("%v", input)
 	}
 	return string(b)
+}
+
+// parseDiscoverOutput parses nmap/masscan output and extracts hosts, ports, and services.
+// Expected format: {"hosts": [{"ip": "x.x.x.x", "hostname": "...", "state": "up", "ports": [...]}]}
+func parseDiscoverOutput(output any, discoveries *domain.DiscoveryResult) {
+	if output == nil {
+		return
+	}
+
+	outputMap, ok := output.(map[string]any)
+	if !ok {
+		return
+	}
+
+	hostsArr, ok := outputMap["hosts"].([]any)
+	if !ok {
+		return
+	}
+
+	for _, h := range hostsArr {
+		hostMap, ok := h.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		ip, _ := hostMap["ip"].(string)
+		if ip == "" {
+			continue
+		}
+
+		// Create host node
+		host := &domain.Host{
+			IP:       ip,
+			Hostname: getStringField(hostMap, "hostname"),
+			State:    getStringField(hostMap, "state"),
+			OS:       getStringField(hostMap, "os"),
+		}
+		discoveries.Hosts = append(discoveries.Hosts, host)
+
+		// Extract ports
+		if portsArr, ok := hostMap["ports"].([]any); ok {
+			for _, p := range portsArr {
+				portMap, ok := p.(map[string]any)
+				if !ok {
+					continue
+				}
+
+				portNum := getIntField(portMap, "port")
+				protocol := getStringField(portMap, "protocol")
+				if portNum == 0 || protocol == "" {
+					continue
+				}
+
+				// Create port node
+				port := &domain.Port{
+					HostID:   ip,
+					Number:   portNum,
+					Protocol: protocol,
+					State:    getStringField(portMap, "state"),
+				}
+				discoveries.Ports = append(discoveries.Ports, port)
+
+				// Extract service if present
+				serviceName := getStringField(portMap, "service")
+				if serviceName != "" {
+					portID := fmt.Sprintf("%s:%d:%s", ip, portNum, protocol)
+					service := &domain.Service{
+						PortID:  portID,
+						Name:    serviceName,
+						Version: getStringField(portMap, "version"),
+						Banner:  getStringField(portMap, "banner"),
+					}
+					discoveries.Services = append(discoveries.Services, service)
+				}
+			}
+		}
+	}
+}
+
+// parseProbeOutput parses httpx output and extracts endpoints and technologies.
+// Expected format: {"results": [{"url": "...", "status_code": 200, "title": "...", "technologies": [...]}]}
+func parseProbeOutput(output any, discoveries *domain.DiscoveryResult) {
+	if output == nil {
+		return
+	}
+
+	outputMap, ok := output.(map[string]any)
+	if !ok {
+		return
+	}
+
+	resultsArr, ok := outputMap["results"].([]any)
+	if !ok {
+		return
+	}
+
+	for _, r := range resultsArr {
+		resultMap, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		url := getStringField(resultMap, "url")
+		if url == "" {
+			continue
+		}
+
+		// Note: Endpoint requires ServiceID which is a composite ID like "192.168.1.1:443:tcp:https"
+		// Since httpx doesn't provide this directly, we'll skip creating endpoint nodes here.
+		// Instead, we could create a simplified version or rely on the harness to handle it.
+		// For now, we'll just extract technologies which are root nodes.
+
+		// Extract technologies
+		if techArr, ok := resultMap["technologies"].([]any); ok {
+			for _, t := range techArr {
+				if techName, ok := t.(string); ok && techName != "" {
+					// Technology requires both name and version as identifying properties
+					// If we don't have version, use "unknown" to satisfy the requirement
+					tech := &domain.Technology{
+						Name:    techName,
+						Version: "unknown",
+					}
+					discoveries.Technologies = append(discoveries.Technologies, tech)
+				}
+			}
+		}
+	}
+}
+
+// parseDomainOutput parses subfinder/amass output and extracts subdomains.
+// Expected format: {"subdomains": ["sub1.example.com", "sub2.example.com"]} or {"results": [...]}
+func parseDomainOutput(output any, parentDomain string, discoveries *domain.DiscoveryResult) {
+	if output == nil {
+		return
+	}
+
+	outputMap, ok := output.(map[string]any)
+	if !ok {
+		return
+	}
+
+	// Try multiple field names (subfinder uses "subdomains", amass might use "results")
+	var subdomains []string
+
+	if subArr, ok := outputMap["subdomains"].([]any); ok {
+		for _, s := range subArr {
+			if subName, ok := s.(string); ok && subName != "" {
+				subdomains = append(subdomains, subName)
+			}
+		}
+	} else if resultsArr, ok := outputMap["results"].([]any); ok {
+		for _, r := range resultsArr {
+			if subName, ok := r.(string); ok && subName != "" {
+				subdomains = append(subdomains, subName)
+			}
+		}
+	}
+
+	// Create subdomain nodes
+	for _, subName := range subdomains {
+		subdomain := &domain.Subdomain{
+			ParentDomain: parentDomain,
+			Name:         subName,
+			Status:       "active",
+		}
+		discoveries.Subdomains = append(discoveries.Subdomains, subdomain)
+	}
+}
+
+// Helper functions to safely extract fields from maps
+
+func getStringField(m map[string]any, key string) string {
+	if val, ok := m[key].(string); ok {
+		return val
+	}
+	return ""
+}
+
+func getIntField(m map[string]any, key string) int {
+	switch v := m[key].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
 }

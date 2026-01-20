@@ -13,6 +13,8 @@ package recon
 import (
 	"context"
 	"time"
+
+	"github.com/zero-day-ai/sdk/graphrag/domain"
 )
 
 // Phase represents a distinct stage in the reconnaissance lifecycle.
@@ -100,6 +102,10 @@ type PhaseResult struct {
 	// Individual tool failures are non-fatal; the phase continues with remaining tools.
 	// A nil or empty Errors slice indicates complete success.
 	Errors []error
+
+	// Discoveries contains the SDK domain types discovered in this phase.
+	// This is aggregated into the overall ReconResult.Discoveries.
+	Discoveries *domain.DiscoveryResult
 }
 
 // ReconResult contains aggregated results and statistics for a complete reconnaissance operation
@@ -125,4 +131,8 @@ type ReconResult struct {
 	// Duration is the total wall-clock time for the complete reconnaissance operation.
 	// This is the sum of all phase durations plus inter-phase coordination overhead.
 	Duration time.Duration
+
+	// Discoveries contains all discovered assets as SDK domain types.
+	// This is returned to Gibson's harness for automatic graph node creation.
+	Discoveries *domain.DiscoveryResult
 }

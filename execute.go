@@ -79,16 +79,14 @@ func executeRecon(ctx context.Context, h agent.Harness, task agent.Task) (agent.
 		}
 	}
 
-	// Build output
-	output := formatReconOutput(reconResult, intel, cfg)
-
-	// Build metadata
+	// Build metadata (including formatted output for logging/reporting)
 	metadata := map[string]any{
 		"hosts_discovered":     reconResult.TotalHosts,
 		"ports_discovered":     reconResult.TotalPorts,
 		"endpoints_discovered": reconResult.TotalEndpoints,
 		"phases_executed":      len(reconResult.Phases),
 		"duration":             reconResult.Duration.String(),
+		"report":               formatReconOutput(reconResult, intel, cfg), // Formatted report in metadata
 	}
 
 	logger.InfoContext(ctx, "reconnaissance complete",
@@ -98,9 +96,12 @@ func executeRecon(ctx context.Context, h agent.Harness, task agent.Task) (agent.
 		"duration", reconResult.Duration.String(),
 	)
 
+	// Return domain.DiscoveryResult as Output for automatic graph node creation by Gibson's harness
+	// The harness will process reconResult.Discoveries and create graph nodes automatically
 	return agent.Result{
-		Status:   agent.StatusSuccess,
-		Output:   output,
+		Status: agent.StatusSuccess,
+		// Output should be the DiscoveryResult so Gibson creates graph nodes
+		Output:   reconResult.Discoveries,
 		Metadata: metadata,
 	}, nil
 }
