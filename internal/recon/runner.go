@@ -10,18 +10,17 @@ import (
 )
 
 // DefaultReconRunner implements the ReconRunner interface using the agent harness
-// for tool execution and knowledge graph storage.
+// for tool execution. Entity extraction is handled automatically by Gibson's
+// TaxonomyGraphEngine when tool outputs are returned via the callback service.
 type DefaultReconRunner struct {
-	harness   agent.Harness
-	extractor TaxonomyExtractor
+	harness agent.Harness
 }
 
 // NewReconRunner creates a new reconnaissance runner that uses the provided harness
-// for tool execution and knowledge graph operations.
+// for tool execution.
 func NewReconRunner(harness agent.Harness) ReconRunner {
 	return &DefaultReconRunner{
-		harness:   harness,
-		extractor: NewTaxonomyExtractor(harness),
+		harness: harness,
 	}
 }
 
@@ -114,8 +113,7 @@ func (r *DefaultReconRunner) runDiscoverPhase(ctx context.Context, targets []str
 				"timing":            4, // Aggressive timing since we know host is up
 			}
 
-			output, err := r.harness.CallTool(ctx, "nmap", input)
-			var toolUsed string
+			_, err := r.harness.CallTool(ctx, "nmap", input)
 			if err != nil {
 				logger.ErrorContext(ctx, "nmap failed, trying masscan fallback", "host", host, "error", err)
 				result.Errors = append(result.Errors, fmt.Errorf("nmap failed for %s: %w", host, err))
@@ -127,42 +125,17 @@ func (r *DefaultReconRunner) runDiscoverPhase(ctx context.Context, targets []str
 					"rate":   1000,
 				}
 
-				output, err = r.harness.CallTool(ctx, "masscan", masscanInput)
+				_, err = r.harness.CallTool(ctx, "masscan", masscanInput)
 				if err != nil {
 					logger.ErrorContext(ctx, "masscan fallback also failed", "host", host, "error", err)
 					result.Errors = append(result.Errors, fmt.Errorf("masscan failed for %s: %w", host, err))
 					continue
 				}
-				toolUsed = "masscan"
 				result.ToolsRun = append(result.ToolsRun, "masscan")
 			} else {
-				toolUsed = "nmap"
 				result.ToolsRun = append(result.ToolsRun, "nmap")
 			}
-
-			// Extract entities from tool output using taxonomy extractor
-			if output != nil {
-				outputJSON, err := json.Marshal(output)
-				if err != nil {
-					logger.ErrorContext(ctx, "failed to marshal tool output", "error", err)
-					result.Errors = append(result.Errors, fmt.Errorf("failed to marshal output: %w", err))
-					continue
-				}
-
-				nodes, rels, err := r.extractor.Extract(ctx, toolUsed, outputJSON)
-				if err != nil {
-					logger.ErrorContext(ctx, "failed to extract entities", "tool", toolUsed, "error", err)
-					result.Errors = append(result.Errors, fmt.Errorf("extraction failed: %w", err))
-				} else {
-					result.NodesCreated += nodes
-					result.RelationsCreated += rels
-					logger.InfoContext(ctx, "extracted entities from tool output",
-						"tool", toolUsed,
-						"host", host,
-						"nodes", nodes,
-						"relations", rels)
-				}
-			}
+			// Note: Entity extraction handled automatically by Gibson's TaxonomyGraphEngine
 		}
 	}
 }
@@ -214,7 +187,7 @@ func (r *DefaultReconRunner) runProbePhase(ctx context.Context, targets []string
 		"threads":          10,
 	}
 
-	output, err := r.harness.CallTool(ctx, "httpx", input)
+	_, err := r.harness.CallTool(ctx, "httpx", input)
 	if err != nil {
 		logger.ErrorContext(ctx, "httpx failed", "error", err)
 		result.Errors = append(result.Errors, fmt.Errorf("httpx failed: %w", err))
@@ -222,29 +195,7 @@ func (r *DefaultReconRunner) runProbePhase(ctx context.Context, targets []string
 	}
 
 	result.ToolsRun = append(result.ToolsRun, "httpx")
-
-	// Extract entities from httpx output using taxonomy extractor
-	if output != nil {
-		outputJSON, err := json.Marshal(output)
-		if err != nil {
-			logger.ErrorContext(ctx, "failed to marshal tool output", "error", err)
-			result.Errors = append(result.Errors, fmt.Errorf("failed to marshal output: %w", err))
-			return
-		}
-
-		nodes, rels, err := r.extractor.Extract(ctx, "httpx", outputJSON)
-		if err != nil {
-			logger.ErrorContext(ctx, "failed to extract entities", "tool", "httpx", "error", err)
-			result.Errors = append(result.Errors, fmt.Errorf("extraction failed: %w", err))
-		} else {
-			result.NodesCreated += nodes
-			result.RelationsCreated += rels
-			logger.InfoContext(ctx, "extracted entities from tool output",
-				"tool", "httpx",
-				"nodes", nodes,
-				"relations", rels)
-		}
-	}
+	// Note: Entity extraction handled automatically by Gibson's TaxonomyGraphEngine
 }
 
 // runDomainPhase executes the domain phase using subfinder and amass.
@@ -264,7 +215,7 @@ func (r *DefaultReconRunner) runDomainPhase(ctx context.Context, targets []strin
 			"domain": domain,
 		}
 
-		output, err := r.harness.CallTool(ctx, "subfinder", input)
+		_, err := r.harness.CallTool(ctx, "subfinder", input)
 		if err != nil {
 			logger.ErrorContext(ctx, "subfinder failed", "error", err, "domain", domain)
 			result.Errors = append(result.Errors, fmt.Errorf("subfinder failed for %s: %w", domain, err))
@@ -272,29 +223,7 @@ func (r *DefaultReconRunner) runDomainPhase(ctx context.Context, targets []strin
 		}
 
 		result.ToolsRun = append(result.ToolsRun, "subfinder")
-
-		// Extract entities from subfinder output using taxonomy extractor
-		if output != nil {
-			outputJSON, err := json.Marshal(output)
-			if err != nil {
-				logger.ErrorContext(ctx, "failed to marshal tool output", "error", err)
-				result.Errors = append(result.Errors, fmt.Errorf("failed to marshal output: %w", err))
-				continue
-			}
-
-			nodes, rels, err := r.extractor.Extract(ctx, "subfinder", outputJSON)
-			if err != nil {
-				logger.ErrorContext(ctx, "failed to extract entities", "tool", "subfinder", "error", err)
-				result.Errors = append(result.Errors, fmt.Errorf("extraction failed: %w", err))
-			} else {
-				result.NodesCreated += nodes
-				result.RelationsCreated += rels
-				logger.InfoContext(ctx, "extracted entities from tool output",
-					"tool", "subfinder",
-					"nodes", nodes,
-					"relations", rels)
-			}
-		}
+		// Note: Entity extraction handled automatically by Gibson's TaxonomyGraphEngine
 	}
 
 	// Run amass for comprehensive enumeration
@@ -306,7 +235,7 @@ func (r *DefaultReconRunner) runDomainPhase(ctx context.Context, targets []strin
 			"passive": true, // Use passive enumeration for speed
 		}
 
-		output, err := r.harness.CallTool(ctx, "amass", input)
+		_, err := r.harness.CallTool(ctx, "amass", input)
 		if err != nil {
 			logger.ErrorContext(ctx, "amass failed", "error", err, "domain", domain)
 			result.Errors = append(result.Errors, fmt.Errorf("amass failed for %s: %w", domain, err))
@@ -314,29 +243,7 @@ func (r *DefaultReconRunner) runDomainPhase(ctx context.Context, targets []strin
 		}
 
 		result.ToolsRun = append(result.ToolsRun, "amass")
-
-		// Extract entities from amass output using taxonomy extractor
-		if output != nil {
-			outputJSON, err := json.Marshal(output)
-			if err != nil {
-				logger.ErrorContext(ctx, "failed to marshal tool output", "error", err)
-				result.Errors = append(result.Errors, fmt.Errorf("failed to marshal output: %w", err))
-				continue
-			}
-
-			nodes, rels, err := r.extractor.Extract(ctx, "amass", outputJSON)
-			if err != nil {
-				logger.ErrorContext(ctx, "failed to extract entities", "tool", "amass", "error", err)
-				result.Errors = append(result.Errors, fmt.Errorf("extraction failed: %w", err))
-			} else {
-				result.NodesCreated += nodes
-				result.RelationsCreated += rels
-				logger.InfoContext(ctx, "extracted entities from tool output",
-					"tool", "amass",
-					"nodes", nodes,
-					"relations", rels)
-			}
-		}
+		// Note: Entity extraction handled automatically by Gibson's TaxonomyGraphEngine
 	}
 }
 
