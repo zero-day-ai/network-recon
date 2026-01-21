@@ -437,25 +437,18 @@ func parseDiscoverOutput(output any, discoveries *domain.DiscoveryResult) {
 					continue
 				}
 
-				// Create port node
-				port := &domain.Port{
-					HostID:   ip,
-					Number:   portNum,
-					Protocol: protocol,
-					State:    getStringField(portMap, "state"),
-				}
+				// Create port node using BelongsTo pattern (SDK v0.27.0+)
+				port := domain.NewPort(portNum, protocol).BelongsTo(host)
+				port.State = getStringField(portMap, "state")
 				discoveries.Ports = append(discoveries.Ports, port)
 
 				// Extract service if present
 				serviceName := getStringField(portMap, "service")
 				if serviceName != "" {
-					portID := fmt.Sprintf("%s:%d:%s", ip, portNum, protocol)
-					service := &domain.Service{
-						PortID:  portID,
-						Name:    serviceName,
-						Version: getStringField(portMap, "version"),
-						Banner:  getStringField(portMap, "banner"),
-					}
+					// Create service node using BelongsTo pattern
+					service := domain.NewService(serviceName).BelongsTo(port)
+					service.Version = getStringField(portMap, "version")
+					service.Banner = getStringField(portMap, "banner")
 					discoveries.Services = append(discoveries.Services, service)
 				}
 			}
