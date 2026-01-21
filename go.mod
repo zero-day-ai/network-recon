@@ -3,7 +3,7 @@ module github.com/zero-day-ai/agents/network-recon
 go 1.24.4
 
 require (
-	github.com/zero-day-ai/sdk v0.27.0
+	github.com/zero-day-ai/sdk v0.28.0
 	go.opentelemetry.io/otel/trace v1.39.0
 )
 
