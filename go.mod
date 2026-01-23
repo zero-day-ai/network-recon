@@ -3,12 +3,10 @@ module github.com/zero-day-ai/agents/network-recon
 go 1.24.4
 
 require (
-	github.com/zero-day-ai/sdk v0.31.0
+	github.com/zero-day-ai/sdk v0.35.0
 	go.opentelemetry.io/otel/trace v1.39.0
 	google.golang.org/protobuf v1.36.11
 )
-
-replace github.com/zero-day-ai/sdk => ../../../opensource/sdk
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
