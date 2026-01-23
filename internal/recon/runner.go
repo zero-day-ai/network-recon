@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/zero-day-ai/sdk/agent"
+	"github.com/zero-day-ai/sdk/api/gen/toolspb"
 	"github.com/zero-day-ai/sdk/graphrag/domain"
 )
 
@@ -83,13 +84,14 @@ func (r *DefaultReconRunner) runDiscoverPhase(ctx context.Context, targets []str
 		// Step 1: Nmap ping scan to find live hosts (fast host discovery)
 		logger.InfoContext(ctx, "running nmap ping scan for host discovery", "target", target)
 
-		pingInput := map[string]any{
-			"target":    target,
-			"scan_type": "ping", // Uses nmap -sn for host discovery only
-			"timing":    4,      // Aggressive timing for ping scan
+		pingReq := &toolspb.NmapRequest{
+			Targets:  []string{target},
+			ScanType: toolspb.ScanType_SCAN_TYPE_PING,
+			Timing:   toolspb.TimingTemplate_TIMING_TEMPLATE_AGGRESSIVE,
 		}
+		pingResp := &toolspb.NmapResponse{}
 
-		pingOutput, err := r.harness.CallTool(ctx, "nmap", pingInput)
+		err := r.harness.CallToolProto(ctx, "nmap", pingReq, pingResp)
 		if err != nil {
 			logger.ErrorContext(ctx, "nmap ping scan failed", "error", err)
 			result.Errors = append(result.Errors, fmt.Errorf("nmap ping scan failed: %w", err))
@@ -98,7 +100,7 @@ func (r *DefaultReconRunner) runDiscoverPhase(ctx context.Context, targets []str
 		result.ToolsRun = append(result.ToolsRun, "nmap-ping")
 
 		// Extract live hosts from nmap ping output and add to discoveries
-		liveHosts := extractLiveHostsFromNmap(pingOutput)
+		liveHosts := extractLiveHostsFromNmapProto(pingResp)
 		if len(liveHosts) == 0 {
 			logger.WarnContext(ctx, "no live hosts found in ping scan", "target", target)
 			continue
@@ -110,44 +112,32 @@ func (r *DefaultReconRunner) runDiscoverPhase(ctx context.Context, targets []str
 		for _, host := range liveHosts {
 			logger.InfoContext(ctx, "running nmap port scan on live host", "host", host)
 
-			input := map[string]any{
-				"target":            host,
-				"ports":             "1-1000",
-				"scan_type":         "connect",
-				"service_detection": true,
-				"timing":            4, // Aggressive timing since we know host is up
+			nmapReq := &toolspb.NmapRequest{
+				Targets:          []string{host},
+				Ports:            "1-1000",
+				ScanType:         toolspb.ScanType_SCAN_TYPE_CONNECT,
+				ServiceDetection: true,
+				Timing:           toolspb.TimingTemplate_TIMING_TEMPLATE_AGGRESSIVE,
 			}
+			nmapResp := &toolspb.NmapResponse{}
 
-			output, err := r.harness.CallTool(ctx, "nmap", input)
+			err := r.harness.CallToolProto(ctx, "nmap", nmapReq, nmapResp)
 			if err != nil {
-				logger.ErrorContext(ctx, "nmap failed, trying masscan fallback", "host", host, "error", err)
+				logger.ErrorContext(ctx, "nmap port scan failed", "host", host, "error", err)
 				result.Errors = append(result.Errors, fmt.Errorf("nmap failed for %s: %w", host, err))
-
-				// Fallback: masscan
-				masscanInput := map[string]any{
-					"target": host,
-					"ports":  "1-1000",
-					"rate":   1000,
-				}
-
-				output, err = r.harness.CallTool(ctx, "masscan", masscanInput)
-				if err != nil {
-					logger.ErrorContext(ctx, "masscan fallback also failed", "host", host, "error", err)
-					result.Errors = append(result.Errors, fmt.Errorf("masscan failed for %s: %w", host, err))
-					continue
-				}
-				result.ToolsRun = append(result.ToolsRun, "masscan")
+				// Note: masscan fallback removed - masscan lacks proto definition
+				continue
 			} else {
 				result.ToolsRun = append(result.ToolsRun, "nmap")
-			}
 
-			// Parse nmap/masscan output and extract domain types
-			parseDiscoverOutput(output, discoveries)
+				// Parse nmap proto output
+				parseDiscoverOutputProto(nmapResp, discoveries)
+			}
 		}
 	}
 }
 
-// extractLiveHostsFromNmap parses nmap output and returns a list of live host IPs
+// extractLiveHostsFromNmap parses nmap output and returns a list of live host IPs (legacy map-based)
 func extractLiveHostsFromNmap(output any) []string {
 	if output == nil {
 		return nil
@@ -175,6 +165,21 @@ func extractLiveHostsFromNmap(output any) []string {
 	return hosts
 }
 
+// extractLiveHostsFromNmapProto parses nmap proto response and returns a list of live host IPs
+func extractLiveHostsFromNmapProto(resp *toolspb.NmapResponse) []string {
+	if resp == nil {
+		return nil
+	}
+
+	var hosts []string
+	for _, host := range resp.Hosts {
+		if host.State == "up" && host.Ip != "" {
+			hosts = append(hosts, host.Ip)
+		}
+	}
+	return hosts
+}
+
 // runProbePhase executes the probe phase using httpx.
 func (r *DefaultReconRunner) runProbePhase(ctx context.Context, targets []string, result *PhaseResult, discoveries *domain.DiscoveryResult) {
 	logger := r.harness.Logger()
@@ -187,14 +192,15 @@ func (r *DefaultReconRunner) runProbePhase(ctx context.Context, targets []string
 	logger.InfoContext(ctx, "running httpx probe", "target_count", len(targets))
 
 	// httpx accepts a list of targets
-	input := map[string]any{
-		"targets":          targets,
-		"tech_detect":      true,
-		"follow_redirects": true,
-		"threads":          10,
+	httpxReq := &toolspb.HttpxRequest{
+		Targets:         targets,
+		TechDetect:      true,
+		FollowRedirects: true,
+		Threads:         10,
 	}
+	httpxResp := &toolspb.HttpxResponse{}
 
-	output, err := r.harness.CallTool(ctx, "httpx", input)
+	err := r.harness.CallToolProto(ctx, "httpx", httpxReq, httpxResp)
 	if err != nil {
 		logger.ErrorContext(ctx, "httpx failed", "error", err)
 		result.Errors = append(result.Errors, fmt.Errorf("httpx failed: %w", err))
@@ -204,10 +210,12 @@ func (r *DefaultReconRunner) runProbePhase(ctx context.Context, targets []string
 	result.ToolsRun = append(result.ToolsRun, "httpx")
 
 	// Parse httpx output and extract endpoints/technologies
-	parseProbeOutput(output, discoveries)
+	parseProbeOutputProto(httpxResp, discoveries)
 }
 
-// runDomainPhase executes the domain phase using subfinder and amass.
+// runDomainPhase executes the domain phase.
+// Note: subfinder and amass support removed - they lack proto definitions.
+// Domain enumeration will need to be added back when proto definitions are available.
 func (r *DefaultReconRunner) runDomainPhase(ctx context.Context, targets []string, result *PhaseResult, discoveries *domain.DiscoveryResult) {
 	logger := r.harness.Logger()
 
@@ -216,48 +224,10 @@ func (r *DefaultReconRunner) runDomainPhase(ctx context.Context, targets []strin
 		return
 	}
 
-	// Run subfinder for each domain
-	for _, domainName := range targets {
-		logger.InfoContext(ctx, "running subfinder", "domain", domainName)
-
-		input := map[string]any{
-			"domain": domainName,
-		}
-
-		output, err := r.harness.CallTool(ctx, "subfinder", input)
-		if err != nil {
-			logger.ErrorContext(ctx, "subfinder failed", "error", err, "domain", domainName)
-			result.Errors = append(result.Errors, fmt.Errorf("subfinder failed for %s: %w", domainName, err))
-			continue
-		}
-
-		result.ToolsRun = append(result.ToolsRun, "subfinder")
-
-		// Parse subfinder output and extract subdomains
-		parseDomainOutput(output, domainName, discoveries)
-	}
-
-	// Run amass for comprehensive enumeration
-	for _, domainName := range targets {
-		logger.InfoContext(ctx, "running amass", "domain", domainName)
-
-		input := map[string]any{
-			"domain":  domainName,
-			"passive": true, // Use passive enumeration for speed
-		}
-
-		output, err := r.harness.CallTool(ctx, "amass", input)
-		if err != nil {
-			logger.ErrorContext(ctx, "amass failed", "error", err, "domain", domainName)
-			result.Errors = append(result.Errors, fmt.Errorf("amass failed for %s: %w", domainName, err))
-			continue
-		}
-
-		result.ToolsRun = append(result.ToolsRun, "amass")
-
-		// Parse amass output and extract subdomains
-		parseDomainOutput(output, domainName, discoveries)
-	}
+	// TODO: Re-enable when subfinder/amass proto definitions are available
+	// For now, domain phase is a no-op
+	logger.WarnContext(ctx, "domain phase skipped - subfinder/amass tools lack proto definitions",
+		"domain_count", len(targets))
 }
 
 // RunAll executes all reconnaissance phases in sequence: discover -> probe -> domain.
@@ -386,7 +356,7 @@ func marshalInput(input map[string]any) string {
 	return string(b)
 }
 
-// parseDiscoverOutput parses nmap/masscan output and extracts hosts, ports, and services.
+// parseDiscoverOutput parses nmap/masscan output and extracts hosts, ports, and services (legacy map-based).
 // Expected format: {"hosts": [{"ip": "x.x.x.x", "hostname": "...", "state": "up", "ports": [...]}]}
 func parseDiscoverOutput(output any, discoveries *domain.DiscoveryResult) {
 	if output == nil {
@@ -456,7 +426,57 @@ func parseDiscoverOutput(output any, discoveries *domain.DiscoveryResult) {
 	}
 }
 
-// parseProbeOutput parses httpx output and extracts endpoints and technologies.
+// parseDiscoverOutputProto parses nmap proto response and extracts hosts, ports, and services.
+func parseDiscoverOutputProto(resp *toolspb.NmapResponse, discoveries *domain.DiscoveryResult) {
+	if resp == nil {
+		return
+	}
+
+	for _, nmapHost := range resp.Hosts {
+		if nmapHost.Ip == "" {
+			continue
+		}
+
+		// Create host node
+		host := &domain.Host{
+			IP:       nmapHost.Ip,
+			Hostname: nmapHost.Hostname,
+			State:    nmapHost.State,
+		}
+
+		// Extract OS from OS matches if available
+		if len(nmapHost.OsMatches) > 0 {
+			host.OS = nmapHost.OsMatches[0].Name
+		}
+
+		discoveries.Hosts = append(discoveries.Hosts, host)
+
+		// Extract ports
+		for _, nmapPort := range nmapHost.Ports {
+			if nmapPort.Number == 0 || nmapPort.Protocol == "" {
+				continue
+			}
+
+			// Create port node using BelongsTo pattern
+			port := domain.NewPort(int(nmapPort.Number), nmapPort.Protocol).BelongsTo(host)
+			port.State = nmapPort.State
+			discoveries.Ports = append(discoveries.Ports, port)
+
+			// Extract service if present
+			if nmapPort.Service != nil && nmapPort.Service.Name != "" {
+				service := domain.NewService(nmapPort.Service.Name).BelongsTo(port)
+				service.Version = nmapPort.Service.Version
+				// Note: NmapService doesn't have a Banner field in proto, using Product as alternative
+				if nmapPort.Service.Product != "" {
+					service.Banner = nmapPort.Service.Product
+				}
+				discoveries.Services = append(discoveries.Services, service)
+			}
+		}
+	}
+}
+
+// parseProbeOutput parses httpx output and extracts endpoints and technologies (legacy map-based).
 // Expected format: {"results": [{"url": "...", "status_code": 200, "title": "...", "technologies": [...]}]}
 func parseProbeOutput(output any, discoveries *domain.DiscoveryResult) {
 	if output == nil {
@@ -502,6 +522,38 @@ func parseProbeOutput(output any, discoveries *domain.DiscoveryResult) {
 					discoveries.Technologies = append(discoveries.Technologies, tech)
 				}
 			}
+		}
+	}
+}
+
+// parseProbeOutputProto parses httpx proto response and extracts endpoints and technologies.
+func parseProbeOutputProto(resp *toolspb.HttpxResponse, discoveries *domain.DiscoveryResult) {
+	if resp == nil {
+		return
+	}
+
+	for _, result := range resp.Results {
+		if result.Url == "" {
+			continue
+		}
+
+		// Extract technologies
+		for _, tech := range result.Technologies {
+			if tech.Name == "" {
+				continue
+			}
+
+			// Use version from proto, or "unknown" if empty
+			version := tech.Version
+			if version == "" {
+				version = "unknown"
+			}
+
+			technology := &domain.Technology{
+				Name:    tech.Name,
+				Version: version,
+			}
+			discoveries.Technologies = append(discoveries.Technologies, technology)
 		}
 	}
 }

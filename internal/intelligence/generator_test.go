@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zero-day-ai/sdk/agent"
+	"github.com/zero-day-ai/sdk/api/gen/graphragpb"
 	"github.com/zero-day-ai/sdk/finding"
 	"github.com/zero-day-ai/sdk/graphrag"
 	"github.com/zero-day-ai/sdk/llm"
@@ -20,39 +21,41 @@ import (
 	"github.com/zero-day-ai/sdk/tool"
 	"github.com/zero-day-ai/sdk/types"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/protobuf/proto"
 )
 
 // mockHarness implements agent.Harness for testing
 type mockHarness struct {
-	// Mock responses
-	graphQueryResults []graphrag.Result
-	graphQueryError   error
-	llmResponse       *llm.CompletionResponse
-	llmError          error
-	storeGraphResults []string
-	storeGraphError   error
+	// Mock responses - using proto types
+	graphQueryResultsProto []*graphragpb.QueryResult
+	graphQueryError        error
+	llmResponse            *llm.CompletionResponse
+	llmError               error
+	storeNodeResult        string
+	storeNodeError         error
 
 	// Call tracking
 	graphQueryCalls  int
 	llmCompleteCalls int
-	storeGraphCalls  int
+	storeNodeCalls   int
 	lastLLMMessages  []llm.Message
-	lastGraphBatch   *graphrag.Batch
+	lastStoredNode   *graphragpb.GraphNode
 }
 
 func newMockHarness() *mockHarness {
 	return &mockHarness{
-		graphQueryResults: []graphrag.Result{},
-		storeGraphResults: []string{"intel-node-123"},
+		graphQueryResultsProto: []*graphragpb.QueryResult{},
+		storeNodeResult:        "intel-node-123",
 	}
 }
 
-func (m *mockHarness) QueryGraphRAG(ctx context.Context, query graphrag.Query) ([]graphrag.Result, error) {
+// QueryNodes implements the proto-canonical GraphRAG query method
+func (m *mockHarness) QueryNodes(ctx context.Context, query *graphragpb.GraphQuery) ([]*graphragpb.QueryResult, error) {
 	m.graphQueryCalls++
 	if m.graphQueryError != nil {
 		return nil, m.graphQueryError
 	}
-	return m.graphQueryResults, nil
+	return m.graphQueryResultsProto, nil
 }
 
 func (m *mockHarness) Complete(ctx context.Context, slot string, messages []llm.Message, opts ...llm.CompletionOption) (*llm.CompletionResponse, error) {
@@ -64,40 +67,25 @@ func (m *mockHarness) Complete(ctx context.Context, slot string, messages []llm.
 	return m.llmResponse, nil
 }
 
-func (m *mockHarness) StoreGraphBatch(ctx context.Context, batch graphrag.Batch) ([]string, error) {
-	m.storeGraphCalls++
-	m.lastGraphBatch = &batch
-	if m.storeGraphError != nil {
-		return nil, m.storeGraphError
+// StoreNode implements the proto-canonical GraphRAG storage method
+func (m *mockHarness) StoreNode(ctx context.Context, node *graphragpb.GraphNode) (string, error) {
+	m.storeNodeCalls++
+	m.lastStoredNode = node
+	if m.storeNodeError != nil {
+		return "", m.storeNodeError
 	}
-	return m.storeGraphResults, nil
+	return m.storeNodeResult, nil
+}
+
+// CallToolProto implements the proto-canonical tool call method
+func (m *mockHarness) CallToolProto(ctx context.Context, name string, request proto.Message, response proto.Message) error {
+	return errors.New("not implemented")
 }
 
 func (m *mockHarness) Logger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelError, // Only show errors during tests
 	}))
-}
-
-// Implement other required agent.Harness methods as no-ops
-func (m *mockHarness) CallTool(ctx context.Context, toolName string, input map[string]interface{}) (map[string]interface{}, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (m *mockHarness) CallToolsParallel(ctx context.Context, calls []agent.ToolCall, maxConcurrency int) ([]agent.ToolResult, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (m *mockHarness) GetConfig(key string) (string, bool) {
-	return "", false
-}
-
-func (m *mockHarness) GetTask() agent.Task {
-	return agent.Task{}
-}
-
-func (m *mockHarness) SendPartialResult(ctx context.Context, result map[string]interface{}) error {
-	return nil
 }
 
 func (m *mockHarness) CancelMission(ctx context.Context, missionID string) error {
@@ -145,10 +133,6 @@ func (m *mockHarness) GetRelatedFindings(ctx context.Context, findingID string) 
 	return nil, errors.New("not implemented")
 }
 
-func (m *mockHarness) StoreGraphNode(ctx context.Context, node graphrag.GraphNode) (string, error) {
-	return "", errors.New("not implemented")
-}
-
 func (m *mockHarness) GetMissionRunHistory(ctx context.Context) ([]types.MissionRunSummary, error) {
 	return nil, errors.New("not implemented")
 }
@@ -161,20 +145,12 @@ func (m *mockHarness) GetAllRunFindings(ctx context.Context, filter finding.Filt
 	return nil, errors.New("not implemented")
 }
 
-func (m *mockHarness) QueryGraphRAGScoped(ctx context.Context, query graphrag.Query, scope graphrag.MissionScope) ([]graphrag.Result, error) {
-	return nil, errors.New("not implemented")
-}
-
 func (m *mockHarness) GetCredential(ctx context.Context, name string) (*types.Credential, error) {
 	return nil, errors.New("not implemented")
 }
 
 func (m *mockHarness) DelegateToAgent(ctx context.Context, agentName string, task agent.Task) (agent.Result, error) {
 	return agent.Result{}, errors.New("not implemented")
-}
-
-func (m *mockHarness) CreateGraphRelationship(ctx context.Context, rel graphrag.Relationship) error {
-	return errors.New("not implemented")
 }
 
 func (m *mockHarness) CreateMission(ctx context.Context, workflowSpec any, targetID string, opts *mission.CreateMissionOpts) (*mission.MissionInfo, error) {
@@ -225,10 +201,6 @@ func (m *mockHarness) ReportStepHints(ctx context.Context, hints *planning.StepH
 	return errors.New("not implemented")
 }
 
-func (m *mockHarness) TraverseGraph(ctx context.Context, startNodeID string, opts graphrag.TraversalOptions) ([]graphrag.TraversalResult, error) {
-	return nil, errors.New("not implemented")
-}
-
 func (m *mockHarness) RunMission(ctx context.Context, missionID string, opts *mission.RunMissionOpts) error {
 	return errors.New("not implemented")
 }
@@ -239,18 +211,6 @@ func (m *mockHarness) WaitForMission(ctx context.Context, missionID string, time
 
 func (m *mockHarness) Stream(ctx context.Context, slot string, messages []llm.Message) (<-chan llm.StreamChunk, error) {
 	return nil, errors.New("not implemented")
-}
-
-func (m *mockHarness) EmitOutput(content string, isReasoning bool) error {
-	return errors.New("not implemented")
-}
-
-func (m *mockHarness) EmitToolCall(toolName string, input map[string]any, callID string) error {
-	return errors.New("not implemented")
-}
-
-func (m *mockHarness) EmitToolResult(output map[string]any, err error, callID string) error {
-	return errors.New("not implemented")
 }
 
 func (m *mockHarness) Tracer() trace.Tracer {
@@ -273,13 +233,13 @@ func (m *mockHarness) GetMissionResults(ctx context.Context, missionID string) (
 func setupMockHarnessWithSampleData(phase string) *mockHarness {
 	mock := newMockHarness()
 
-	// Simulate GraphRAG query results for a specific phase
-	mock.graphQueryResults = []graphrag.Result{
+	// Simulate GraphRAG query results for a specific phase using proto types
+	mock.graphQueryResultsProto = []*graphragpb.QueryResult{
 		{
-			Node: graphrag.GraphNode{
-				ID:   "host-192-168-1-10",
-				Type: "Host",
-				Properties: map[string]interface{}{
+			NodeId: "host-192-168-1-10",
+			Node: &graphragpb.GraphNode{
+				Type: graphragpb.NodeType_NODE_TYPE_HOST,
+				Properties: map[string]string{
 					"ip":       "192.168.1.10",
 					"hostname": "web-server-01",
 					"phase":    phase,
@@ -288,11 +248,11 @@ func setupMockHarnessWithSampleData(phase string) *mockHarness {
 			Score: 0.95,
 		},
 		{
-			Node: graphrag.GraphNode{
-				ID:   "port-192-168-1-10-80",
-				Type: "Port",
-				Properties: map[string]interface{}{
-					"port":    80,
+			NodeId: "port-192-168-1-10-80",
+			Node: &graphragpb.GraphNode{
+				Type: graphragpb.NodeType_NODE_TYPE_PORT,
+				Properties: map[string]string{
+					"port":    "80",
 					"service": "http",
 					"phase":   phase,
 				},
@@ -300,10 +260,10 @@ func setupMockHarnessWithSampleData(phase string) *mockHarness {
 			Score: 0.90,
 		},
 		{
-			Node: graphrag.GraphNode{
-				ID:   "finding-sqli-001",
-				Type: "Finding",
-				Properties: map[string]interface{}{
+			NodeId: "finding-sqli-001",
+			Node: &graphragpb.GraphNode{
+				Type: graphragpb.NodeType_NODE_TYPE_FINDING,
+				Properties: map[string]string{
 					"title":    "SQL Injection Vulnerability",
 					"severity": "critical",
 					"phase":    phase,
@@ -567,8 +527,8 @@ func TestGenerateForPhase_Success(t *testing.T) {
 		t.Errorf("Expected 1 LLM completion call, got %d", mock.llmCompleteCalls)
 	}
 
-	if mock.storeGraphCalls != 1 {
-		t.Errorf("Expected 1 StoreGraphBatch call, got %d", mock.storeGraphCalls)
+	if mock.storeNodeCalls != 1 {
+		t.Errorf("Expected 1 StoreNode call, got %d", mock.storeNodeCalls)
 	}
 
 	// Verify intelligence metadata
@@ -650,9 +610,9 @@ func TestGenerateForPhase_LLMFailure(t *testing.T) {
 		t.Errorf("Expected LLM completion to be attempted, got %d calls", mock.llmCompleteCalls)
 	}
 
-	// StoreGraphBatch should not be called after LLM failure
-	if mock.storeGraphCalls != 0 {
-		t.Errorf("Expected 0 StoreGraphBatch calls after LLM failure, got %d", mock.storeGraphCalls)
+	// StoreNode should not be called after LLM failure
+	if mock.storeNodeCalls != 0 {
+		t.Errorf("Expected 0 StoreNode calls after LLM failure, got %d", mock.storeNodeCalls)
 	}
 }
 
@@ -678,15 +638,15 @@ func TestGenerateForPhase_ParsingFailure(t *testing.T) {
 		t.Errorf("Expected 1 LLM completion call, got %d", mock.llmCompleteCalls)
 	}
 
-	// StoreGraphBatch should not be called if parsing fails
-	if mock.storeGraphCalls != 0 {
-		t.Errorf("Expected 0 StoreGraphBatch calls after parsing failure, got %d", mock.storeGraphCalls)
+	// StoreNode should not be called if parsing fails
+	if mock.storeNodeCalls != 0 {
+		t.Errorf("Expected 0 StoreNode calls after parsing failure, got %d", mock.storeNodeCalls)
 	}
 }
 
 func TestGenerateForPhase_StoreGraphFailure(t *testing.T) {
 	mock := setupMockHarnessWithSampleData("domain")
-	mock.storeGraphError = errors.New("Neo4j connection timeout")
+	mock.storeNodeError = errors.New("Neo4j connection timeout")
 	gen := NewIntelligenceGenerator(mock)
 
 	ctx := context.Background()
@@ -732,23 +692,23 @@ func TestGenerateForPhase_AllPhases(t *testing.T) {
 func TestGenerateSummary_Success(t *testing.T) {
 	mock := newMockHarness()
 
-	// Setup multi-phase reconnaissance data
-	mock.graphQueryResults = []graphrag.Result{
+	// Setup multi-phase reconnaissance data using proto types
+	mock.graphQueryResultsProto = []*graphragpb.QueryResult{
 		{
-			Node: graphrag.GraphNode{
-				ID:   "host-001",
-				Type: "Host",
-				Properties: map[string]interface{}{
+			NodeId: "host-001",
+			Node: &graphragpb.GraphNode{
+				Type: graphragpb.NodeType_NODE_TYPE_HOST,
+				Properties: map[string]string{
 					"ip": "192.168.1.10",
 				},
 			},
 			Score: 0.95,
 		},
 		{
-			Node: graphrag.GraphNode{
-				ID:   "endpoint-001",
-				Type: "Endpoint",
-				Properties: map[string]interface{}{
+			NodeId: "endpoint-001",
+			Node: &graphragpb.GraphNode{
+				Type: graphragpb.NodeType_NODE_TYPE_ENDPOINT,
+				Properties: map[string]string{
 					"url": "http://192.168.1.10/admin",
 				},
 			},
@@ -839,7 +799,7 @@ func TestGenerateSummary_Success(t *testing.T) {
 func TestGenerateSummary_NoPhaseData(t *testing.T) {
 	mock := newMockHarness()
 	// No query results - empty reconnaissance
-	mock.graphQueryResults = []graphrag.Result{}
+	mock.graphQueryResultsProto = []*graphragpb.QueryResult{}
 
 	// Even with no data, LLM should generate a summary (though confidence will be low)
 	emptyDataSummaryJSON := `{
@@ -896,9 +856,9 @@ func TestGenerateSummary_LLMFailure(t *testing.T) {
 		t.Fatal("Expected error when LLM completion fails")
 	}
 
-	// Verify StoreGraphBatch was not called
-	if mock.storeGraphCalls != 0 {
-		t.Errorf("Expected 0 StoreGraphBatch calls after LLM failure, got %d", mock.storeGraphCalls)
+	// Verify StoreNode was not called
+	if mock.storeNodeCalls != 0 {
+		t.Errorf("Expected 0 StoreNode calls after LLM failure, got %d", mock.storeNodeCalls)
 	}
 }
 
@@ -987,7 +947,7 @@ func TestGenerateForPhase_PromptContainsCorrectData(t *testing.T) {
 	}
 }
 
-func TestGenerateForPhase_GraphBatchStructure(t *testing.T) {
+func TestGenerateForPhase_StoredNodeStructure(t *testing.T) {
 	mock := setupMockHarnessWithSampleData("scan")
 	gen := NewIntelligenceGenerator(mock)
 
@@ -998,44 +958,28 @@ func TestGenerateForPhase_GraphBatchStructure(t *testing.T) {
 		t.Fatalf("GenerateForPhase() unexpected error: %v", err)
 	}
 
-	// Verify batch structure
-	if mock.lastGraphBatch == nil {
-		t.Fatal("Expected StoreGraphBatch to be called with a batch")
+	// Verify node was stored
+	if mock.lastStoredNode == nil {
+		t.Fatal("Expected StoreNode to be called with a node")
 	}
 
-	batch := mock.lastGraphBatch
+	node := mock.lastStoredNode
 
-	// Should contain at least one node (the intelligence node)
-	if len(batch.Nodes) != 1 {
-		t.Errorf("Expected 1 intelligence node in batch, got %d", len(batch.Nodes))
-	}
-
-	intelNode := batch.Nodes[0]
-	if intelNode.Type != "Intelligence" {
-		t.Errorf("Expected node type 'Intelligence', got %q", intelNode.Type)
-	}
-
-	// Verify intelligence node has required properties
-	requiredProps := []string{"mission_id", "phase", "summary", "risk_assessment", "confidence"}
+	// Verify node has required properties
+	requiredProps := []string{"node_type", "mission_id", "phase", "summary", "risk_assessment", "confidence"}
 	for _, prop := range requiredProps {
-		if _, ok := intelNode.Properties[prop]; !ok {
+		if _, ok := node.Properties[prop]; !ok {
 			t.Errorf("Intelligence node missing required property %q", prop)
 		}
 	}
 
-	// Should contain ANALYZES relationships to source nodes
-	// We had 3 source nodes in our mock data
-	expectedAnalyzesRels := 3
-	analyzesCount := 0
-	for _, rel := range batch.Relationships {
-		if rel.Type == "ANALYZES" {
-			analyzesCount++
-		}
+	// Verify it's marked as Intelligence type
+	if node.Properties["node_type"] != "Intelligence" {
+		t.Errorf("Expected node_type 'Intelligence', got %q", node.Properties["node_type"])
 	}
 
-	if analyzesCount != expectedAnalyzesRels {
-		t.Errorf("Expected %d ANALYZES relationships, got %d", expectedAnalyzesRels, analyzesCount)
-	}
+	// Note: ANALYZES relationships are no longer stored due to StoreGraphBatch removal
+	// The test now verifies just the node storage
 }
 
 func TestGenerateForPhase_ContextCancellation(t *testing.T) {
@@ -1060,13 +1004,13 @@ func TestIntelligenceGenerator_EndToEnd(t *testing.T) {
 	// This test verifies the complete flow: query -> prompt -> LLM -> parse -> store
 	mock := newMockHarness()
 
-	// Setup realistic phase data
-	mock.graphQueryResults = []graphrag.Result{
+	// Setup realistic phase data using proto types
+	mock.graphQueryResultsProto = []*graphragpb.QueryResult{
 		{
-			Node: graphrag.GraphNode{
-				ID:   "host-192-168-1-100",
-				Type: "Host",
-				Properties: map[string]interface{}{
+			NodeId: "host-192-168-1-100",
+			Node: &graphragpb.GraphNode{
+				Type: graphragpb.NodeType_NODE_TYPE_HOST,
+				Properties: map[string]string{
 					"ip":       "192.168.1.100",
 					"hostname": "db-server",
 					"phase":    "discover",
@@ -1075,11 +1019,11 @@ func TestIntelligenceGenerator_EndToEnd(t *testing.T) {
 			Score: 0.92,
 		},
 		{
-			Node: graphrag.GraphNode{
-				ID:   "port-192-168-1-100-3306",
-				Type: "Port",
-				Properties: map[string]interface{}{
-					"port":    3306,
+			NodeId: "port-192-168-1-100-3306",
+			Node: &graphragpb.GraphNode{
+				Type: graphragpb.NodeType_NODE_TYPE_PORT,
+				Properties: map[string]string{
+					"port":    "3306",
 					"service": "mysql",
 					"version": "5.7.32",
 					"phase":   "discover",
@@ -1088,10 +1032,10 @@ func TestIntelligenceGenerator_EndToEnd(t *testing.T) {
 			Score: 0.88,
 		},
 		{
-			Node: graphrag.GraphNode{
-				ID:   "finding-weak-password",
-				Type: "Finding",
-				Properties: map[string]interface{}{
+			NodeId: "finding-weak-password",
+			Node: &graphragpb.GraphNode{
+				Type: graphragpb.NodeType_NODE_TYPE_FINDING,
+				Properties: map[string]string{
 					"title":       "Weak MySQL Root Password",
 					"severity":    "high",
 					"description": "MySQL root accessible with default credentials",
@@ -1253,20 +1197,15 @@ func TestIntelligenceGenerator_EndToEnd(t *testing.T) {
 		t.Errorf("Expected 1 LLM completion, got %d", mock.llmCompleteCalls)
 	}
 
-	if mock.storeGraphCalls != 1 {
-		t.Errorf("Expected 1 StoreGraphBatch call, got %d", mock.storeGraphCalls)
+	if mock.storeNodeCalls != 1 {
+		t.Errorf("Expected 1 StoreNode call, got %d", mock.storeNodeCalls)
 	}
 
-	// Verify graph batch structure
-	if mock.lastGraphBatch == nil {
-		t.Fatal("Graph batch was not stored")
+	// Verify stored node structure
+	if mock.lastStoredNode == nil {
+		t.Fatal("Node was not stored")
 	}
 
-	if len(mock.lastGraphBatch.Nodes) != 1 {
-		t.Errorf("Expected 1 intelligence node, got %d", len(mock.lastGraphBatch.Nodes))
-	}
-
-	if len(mock.lastGraphBatch.Relationships) != 3 {
-		t.Errorf("Expected 3 ANALYZES relationships, got %d", len(mock.lastGraphBatch.Relationships))
-	}
+	// Note: Relationships are no longer stored due to StoreGraphBatch removal
+	// The test now verifies just the node storage
 }

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/zero-day-ai/sdk/agent"
-	"github.com/zero-day-ai/sdk/graphrag"
+	"github.com/zero-day-ai/sdk/api/gen/graphragpb"
 	"github.com/zero-day-ai/sdk/llm"
 )
 
@@ -270,15 +270,21 @@ func (g *DefaultIntelligenceGenerator) GenerateSummary(ctx context.Context, miss
 func (g *DefaultIntelligenceGenerator) queryPhaseEntities(ctx context.Context, missionID string, phase string) (map[string]interface{}, []string, error) {
 	logger := g.harness.Logger()
 
-	// Query for phase-specific nodes
-	// Note: The exact node types depend on what each phase creates
-	// This is a generic query that can be refined based on actual schema
-	query := graphrag.NewQuery(fmt.Sprintf("phase:%s mission:%s", phase, missionID)).
-		WithTopK(100).
-		WithMinScore(0.3).
-		WithNodeTypes("Host", "Port", "Endpoint", "Technology", "Finding")
+	// Query for phase-specific nodes using proto-canonical API
+	query := &graphragpb.GraphQuery{
+		Text:     fmt.Sprintf("phase:%s mission:%s", phase, missionID),
+		TopK:     100,
+		MinScore: 0.3,
+		NodeTypes: []graphragpb.NodeType{
+			graphragpb.NodeType_NODE_TYPE_HOST,
+			graphragpb.NodeType_NODE_TYPE_PORT,
+			graphragpb.NodeType_NODE_TYPE_ENDPOINT,
+			graphragpb.NodeType_NODE_TYPE_TECHNOLOGY,
+			graphragpb.NodeType_NODE_TYPE_FINDING,
+		},
+	}
 
-	results, err := g.harness.QueryGraphRAG(ctx, *query)
+	results, err := g.harness.QueryNodes(ctx, query)
 	if err != nil {
 		return nil, nil, fmt.Errorf("GraphRAG query failed: %w", err)
 	}
@@ -294,24 +300,30 @@ func (g *DefaultIntelligenceGenerator) queryPhaseEntities(ctx context.Context, m
 	findings := []map[string]interface{}{}
 
 	for _, result := range results {
-		nodeIDs = append(nodeIDs, result.Node.ID)
+		nodeIDs = append(nodeIDs, result.NodeId)
+
+		// Convert proto properties to map[string]interface{}
+		props := make(map[string]interface{})
+		for k, v := range result.Node.Properties {
+			props[k] = v
+		}
 
 		// Organize entities by type
 		switch result.Node.Type {
-		case "Host":
-			hosts = append(hosts, result.Node.Properties)
-		case "Port":
-			ports = append(ports, result.Node.Properties)
-		case "Endpoint":
-			endpoints = append(endpoints, result.Node.Properties)
-		case "Technology":
-			technologies = append(technologies, result.Node.Properties)
-		case "Finding":
-			findings = append(findings, result.Node.Properties)
+		case graphragpb.NodeType_NODE_TYPE_HOST:
+			hosts = append(hosts, props)
+		case graphragpb.NodeType_NODE_TYPE_PORT:
+			ports = append(ports, props)
+		case graphragpb.NodeType_NODE_TYPE_ENDPOINT:
+			endpoints = append(endpoints, props)
+		case graphragpb.NodeType_NODE_TYPE_TECHNOLOGY:
+			technologies = append(technologies, props)
+		case graphragpb.NodeType_NODE_TYPE_FINDING:
+			findings = append(findings, props)
 		default:
 			logger.Warn("Unknown node type in phase query",
 				"type", result.Node.Type,
-				"node_id", result.Node.ID,
+				"node_id", result.NodeId,
 			)
 		}
 	}
@@ -357,8 +369,9 @@ func (g *DefaultIntelligenceGenerator) queryAllPhaseEntities(ctx context.Context
 	return entitiesByPhase, allNodeIDs, completedPhases, nil
 }
 
-// storeIntelligenceNode stores an Intelligence struct as a node in the knowledge graph
-// with ANALYZES relationships to source nodes and GENERATED_BY relationship to the LLM call.
+// storeIntelligenceNode stores an Intelligence struct as a node in the knowledge graph.
+// Note: Relationships are not stored due to StoreGraphBatch removal. Only the intelligence
+// node is stored using the proto-canonical StoreNode API.
 // Returns the assigned node ID.
 func (g *DefaultIntelligenceGenerator) storeIntelligenceNode(ctx context.Context, intel *Intelligence, sourceNodeIDs []string, llmCallID string) (string, error) {
 	// Serialize intelligence to JSON for storage
@@ -367,50 +380,42 @@ func (g *DefaultIntelligenceGenerator) storeIntelligenceNode(ctx context.Context
 		return "", fmt.Errorf("failed to marshal intelligence to JSON: %w", err)
 	}
 
-	// Create intelligence node
-	intelligenceNode := graphrag.NewGraphNode("Intelligence").
-		WithContent(intel.Summary). // Use summary as content for semantic search
-		WithProperty("mission_id", intel.MissionID).
-		WithProperty("phase", intel.Phase).
-		WithProperty("summary", intel.Summary).
-		WithProperty("risk_assessment", intel.RiskAssessment).
-		WithProperty("confidence", intel.Confidence).
-		WithProperty("source_node_count", intel.SourceNodeCount).
-		WithProperty("source_llm_call_id", intel.SourceLLMCallID).
-		WithProperty("model", intel.Model).
-		WithProperty("timestamp", intel.Timestamp.Format(time.RFC3339)).
-		WithProperty("full_intelligence", string(intelJSON)) // Store complete intelligence as JSON
+	// Convert confidence to string for proto map[string]string
+	confidenceStr := fmt.Sprintf("%.2f", intel.Confidence)
+	sourceNodeCountStr := fmt.Sprintf("%d", intel.SourceNodeCount)
 
-	// Create batch with intelligence node
-	batch := graphrag.NewBatch()
-	batch.Nodes = append(batch.Nodes, *intelligenceNode)
-
-	// Create ANALYZES relationships to all source nodes
-	for _, sourceNodeID := range sourceNodeIDs {
-		rel := graphrag.NewRelationship(intelligenceNode.ID, sourceNodeID, "ANALYZES").
-			WithProperty("analyzed_at", time.Now().Format(time.RFC3339))
-		batch.Relationships = append(batch.Relationships, *rel)
+	// Create intelligence node using proto types
+	node := &graphragpb.GraphNode{
+		Type:    graphragpb.NodeType_NODE_TYPE_UNSPECIFIED, // Custom type for intelligence
+		Content: intel.Summary,                             // Use summary as content for semantic search
+		Properties: map[string]string{
+			"node_type":          "Intelligence",
+			"mission_id":         intel.MissionID,
+			"phase":              intel.Phase,
+			"summary":            intel.Summary,
+			"risk_assessment":    intel.RiskAssessment,
+			"confidence":         confidenceStr,
+			"source_node_count":  sourceNodeCountStr,
+			"source_llm_call_id": intel.SourceLLMCallID,
+			"model":              intel.Model,
+			"timestamp":          intel.Timestamp.Format(time.RFC3339),
+			"full_intelligence":  string(intelJSON), // Store complete intelligence as JSON
+		},
 	}
 
-	// Create GENERATED_BY relationship to LLM call
-	if llmCallID != "" {
-		rel := graphrag.NewRelationship(intelligenceNode.ID, llmCallID, "GENERATED_BY").
-			WithProperty("generated_at", time.Now().Format(time.RFC3339))
-		batch.Relationships = append(batch.Relationships, *rel)
-	}
-
-	// Store batch in knowledge graph
-	nodeIDs, err := g.harness.StoreGraphBatch(ctx, *batch)
+	// Store the node using proto-canonical API
+	nodeID, err := g.harness.StoreNode(ctx, node)
 	if err != nil {
-		return "", fmt.Errorf("failed to store graph batch: %w", err)
+		return "", fmt.Errorf("failed to store intelligence node: %w", err)
 	}
 
-	if len(nodeIDs) == 0 {
-		return "", fmt.Errorf("no node IDs returned from StoreGraphBatch")
-	}
+	// Note: ANALYZES and GENERATED_BY relationships are not stored
+	// because CreateGraphRelationship/StoreGraphBatch were removed from the Harness interface.
+	// These relationships would need to be stored through a different mechanism if needed.
+	_ = sourceNodeIDs // Acknowledge unused parameter
+	_ = llmCallID     // Acknowledge unused parameter
 
-	// First node ID is the intelligence node ID
-	return nodeIDs[0], nil
+	return nodeID, nil
 }
 
 // truncate truncates a string to maxLen characters for logging purposes.
