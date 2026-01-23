@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/zero-day-ai/sdk/agent"
+	"github.com/zero-day-ai/sdk/api/gen/graphragpb"
 	"github.com/zero-day-ai/sdk/api/gen/toolspb"
 	"github.com/zero-day-ai/sdk/graphrag/domain"
 )
@@ -37,7 +38,7 @@ func (r *DefaultReconRunner) RunPhase(ctx context.Context, phase Phase, targets 
 		Phase:       phase,
 		ToolsRun:    []string{},
 		Errors:      []error{},
-		Discoveries: domain.NewDiscoveryResult(),
+		Discoveries: domain.NewEmptyDiscoveryResult(),
 	}
 
 	logger.InfoContext(ctx, "starting reconnaissance phase",
@@ -239,7 +240,7 @@ func (r *DefaultReconRunner) RunAll(ctx context.Context, subnet string, domains 
 
 	result := &ReconResult{
 		Phases:      []*PhaseResult{},
-		Discoveries: domain.NewDiscoveryResult(),
+		Discoveries: domain.NewEmptyDiscoveryResult(),
 	}
 
 	logger.InfoContext(ctx, "starting full reconnaissance workflow",
@@ -289,13 +290,13 @@ func (r *DefaultReconRunner) RunAll(ctx context.Context, subnet string, domains 
 
 		// Merge phase discoveries into overall result
 		if phaseResult.Discoveries != nil {
-			result.Discoveries.Hosts = append(result.Discoveries.Hosts, phaseResult.Discoveries.Hosts...)
-			result.Discoveries.Ports = append(result.Discoveries.Ports, phaseResult.Discoveries.Ports...)
-			result.Discoveries.Services = append(result.Discoveries.Services, phaseResult.Discoveries.Services...)
-			result.Discoveries.Endpoints = append(result.Discoveries.Endpoints, phaseResult.Discoveries.Endpoints...)
-			result.Discoveries.Domains = append(result.Discoveries.Domains, phaseResult.Discoveries.Domains...)
-			result.Discoveries.Subdomains = append(result.Discoveries.Subdomains, phaseResult.Discoveries.Subdomains...)
-			result.Discoveries.Technologies = append(result.Discoveries.Technologies, phaseResult.Discoveries.Technologies...)
+			result.Discoveries.Proto.Hosts = append(result.Discoveries.Proto.Hosts, phaseResult.Discoveries.Hosts()...)
+			result.Discoveries.Proto.Ports = append(result.Discoveries.Proto.Ports, phaseResult.Discoveries.Ports()...)
+			result.Discoveries.Proto.Services = append(result.Discoveries.Proto.Services, phaseResult.Discoveries.Services()...)
+			result.Discoveries.Proto.Endpoints = append(result.Discoveries.Proto.Endpoints, phaseResult.Discoveries.Endpoints()...)
+			result.Discoveries.Proto.Domains = append(result.Discoveries.Proto.Domains, phaseResult.Discoveries.Domains()...)
+			result.Discoveries.Proto.Subdomains = append(result.Discoveries.Proto.Subdomains, phaseResult.Discoveries.Subdomains()...)
+			result.Discoveries.Proto.Technologies = append(result.Discoveries.Proto.Technologies, phaseResult.Discoveries.Technologies()...)
 		}
 	}
 
@@ -384,14 +385,20 @@ func parseDiscoverOutput(output any, discoveries *domain.DiscoveryResult) {
 			continue
 		}
 
-		// Create host node
-		host := &domain.Host{
-			IP:       ip,
-			Hostname: getStringField(hostMap, "hostname"),
-			State:    getStringField(hostMap, "state"),
-			OS:       getStringField(hostMap, "os"),
+		// Create host proto for discovery result
+		hostProto := &graphragpb.Host{
+			Ip: ip,
 		}
-		discoveries.Hosts = append(discoveries.Hosts, host)
+		if hostname := getStringField(hostMap, "hostname"); hostname != "" {
+			hostProto.Hostname = &hostname
+		}
+		if state := getStringField(hostMap, "state"); state != "" {
+			hostProto.State = &state
+		}
+		if os := getStringField(hostMap, "os"); os != "" {
+			hostProto.Os = &os
+		}
+		discoveries.AddHost(hostProto)
 
 		// Extract ports
 		if portsArr, ok := hostMap["ports"].([]any); ok {
@@ -407,19 +414,32 @@ func parseDiscoverOutput(output any, discoveries *domain.DiscoveryResult) {
 					continue
 				}
 
-				// Create port node using BelongsTo pattern (SDK v0.27.0+)
-				port := domain.NewPort(portNum, protocol).BelongsTo(host)
-				port.State = getStringField(portMap, "state")
-				discoveries.Ports = append(discoveries.Ports, port)
+				// Create port proto
+				portProto := &graphragpb.Port{
+					Number:   int32(portNum),
+					Protocol: protocol,
+					HostId:   ip, // Reference to parent host by IP
+				}
+				if state := getStringField(portMap, "state"); state != "" {
+					portProto.State = &state
+				}
+				discoveries.AddPort(portProto)
 
 				// Extract service if present
 				serviceName := getStringField(portMap, "service")
 				if serviceName != "" {
-					// Create service node using BelongsTo pattern
-					service := domain.NewService(serviceName).BelongsTo(port)
-					service.Version = getStringField(portMap, "version")
-					service.Banner = getStringField(portMap, "banner")
-					discoveries.Services = append(discoveries.Services, service)
+					// Create service proto
+					serviceProto := &graphragpb.Service{
+						Name:   serviceName,
+						PortId: fmt.Sprintf("%s:%d/%s", ip, portNum, protocol), // Reference to parent port
+					}
+					if version := getStringField(portMap, "version"); version != "" {
+						serviceProto.Version = &version
+					}
+					if banner := getStringField(portMap, "banner"); banner != "" {
+						serviceProto.Banner = &banner
+					}
+					discoveries.AddService(serviceProto)
 				}
 			}
 		}
@@ -437,19 +457,23 @@ func parseDiscoverOutputProto(resp *toolspb.NmapResponse, discoveries *domain.Di
 			continue
 		}
 
-		// Create host node
-		host := &domain.Host{
-			IP:       nmapHost.Ip,
-			Hostname: nmapHost.Hostname,
-			State:    nmapHost.State,
+		// Create host proto
+		hostProto := &graphragpb.Host{
+			Ip: nmapHost.Ip,
+		}
+		if nmapHost.Hostname != "" {
+			hostProto.Hostname = &nmapHost.Hostname
+		}
+		if nmapHost.State != "" {
+			hostProto.State = &nmapHost.State
 		}
 
 		// Extract OS from OS matches if available
-		if len(nmapHost.OsMatches) > 0 {
-			host.OS = nmapHost.OsMatches[0].Name
+		if len(nmapHost.OsMatches) > 0 && nmapHost.OsMatches[0].Name != "" {
+			hostProto.Os = &nmapHost.OsMatches[0].Name
 		}
 
-		discoveries.Hosts = append(discoveries.Hosts, host)
+		discoveries.AddHost(hostProto)
 
 		// Extract ports
 		for _, nmapPort := range nmapHost.Ports {
@@ -457,20 +481,31 @@ func parseDiscoverOutputProto(resp *toolspb.NmapResponse, discoveries *domain.Di
 				continue
 			}
 
-			// Create port node using BelongsTo pattern
-			port := domain.NewPort(int(nmapPort.Number), nmapPort.Protocol).BelongsTo(host)
-			port.State = nmapPort.State
-			discoveries.Ports = append(discoveries.Ports, port)
+			// Create port proto
+			portProto := &graphragpb.Port{
+				Number:   nmapPort.Number,
+				Protocol: nmapPort.Protocol,
+				HostId:   nmapHost.Ip,
+			}
+			if nmapPort.State != "" {
+				portProto.State = &nmapPort.State
+			}
+			discoveries.AddPort(portProto)
 
 			// Extract service if present
 			if nmapPort.Service != nil && nmapPort.Service.Name != "" {
-				service := domain.NewService(nmapPort.Service.Name).BelongsTo(port)
-				service.Version = nmapPort.Service.Version
+				serviceProto := &graphragpb.Service{
+					Name:   nmapPort.Service.Name,
+					PortId: fmt.Sprintf("%s:%d/%s", nmapHost.Ip, nmapPort.Number, nmapPort.Protocol),
+				}
+				if nmapPort.Service.Version != "" {
+					serviceProto.Version = &nmapPort.Service.Version
+				}
 				// Note: NmapService doesn't have a Banner field in proto, using Product as alternative
 				if nmapPort.Service.Product != "" {
-					service.Banner = nmapPort.Service.Product
+					serviceProto.Banner = &nmapPort.Service.Product
 				}
-				discoveries.Services = append(discoveries.Services, service)
+				discoveries.AddService(serviceProto)
 			}
 		}
 	}
@@ -515,11 +550,12 @@ func parseProbeOutput(output any, discoveries *domain.DiscoveryResult) {
 				if techName, ok := t.(string); ok && techName != "" {
 					// Technology requires both name and version as identifying properties
 					// If we don't have version, use "unknown" to satisfy the requirement
-					tech := &domain.Technology{
+					version := "unknown"
+					techProto := &graphragpb.Technology{
 						Name:    techName,
-						Version: "unknown",
+						Version: &version,
 					}
-					discoveries.Technologies = append(discoveries.Technologies, tech)
+					discoveries.AddTechnology(techProto)
 				}
 			}
 		}
@@ -549,11 +585,11 @@ func parseProbeOutputProto(resp *toolspb.HttpxResponse, discoveries *domain.Disc
 				version = "unknown"
 			}
 
-			technology := &domain.Technology{
+			techProto := &graphragpb.Technology{
 				Name:    tech.Name,
-				Version: version,
+				Version: &version,
 			}
-			discoveries.Technologies = append(discoveries.Technologies, technology)
+			discoveries.AddTechnology(techProto)
 		}
 	}
 }
@@ -589,12 +625,14 @@ func parseDomainOutput(output any, parentDomain string, discoveries *domain.Disc
 
 	// Create subdomain nodes
 	for _, subName := range subdomains {
-		subdomain := &domain.Subdomain{
-			ParentDomain: parentDomain,
+		subProto := &graphragpb.Subdomain{
 			Name:         subName,
-			Status:       "active",
+			ParentDomain: parentDomain,
 		}
-		discoveries.Subdomains = append(discoveries.Subdomains, subdomain)
+		// Set full name as subdomain.parentdomain format
+		fullName := subName + "." + parentDomain
+		subProto.FullName = &fullName
+		discoveries.Proto.Subdomains = append(discoveries.Proto.Subdomains, subProto)
 	}
 }
 

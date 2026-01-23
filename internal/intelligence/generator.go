@@ -275,12 +275,12 @@ func (g *DefaultIntelligenceGenerator) queryPhaseEntities(ctx context.Context, m
 		Text:     fmt.Sprintf("phase:%s mission:%s", phase, missionID),
 		TopK:     100,
 		MinScore: 0.3,
-		NodeTypes: []graphragpb.NodeType{
-			graphragpb.NodeType_NODE_TYPE_HOST,
-			graphragpb.NodeType_NODE_TYPE_PORT,
-			graphragpb.NodeType_NODE_TYPE_ENDPOINT,
-			graphragpb.NodeType_NODE_TYPE_TECHNOLOGY,
-			graphragpb.NodeType_NODE_TYPE_FINDING,
+		NodeTypes: []string{
+			"host",
+			"port",
+			"endpoint",
+			"technology",
+			"finding",
 		},
 	}
 
@@ -300,7 +300,7 @@ func (g *DefaultIntelligenceGenerator) queryPhaseEntities(ctx context.Context, m
 	findings := []map[string]interface{}{}
 
 	for _, result := range results {
-		nodeIDs = append(nodeIDs, result.NodeId)
+		nodeIDs = append(nodeIDs, result.Node.Id)
 
 		// Convert proto properties to map[string]interface{}
 		props := make(map[string]interface{})
@@ -310,20 +310,20 @@ func (g *DefaultIntelligenceGenerator) queryPhaseEntities(ctx context.Context, m
 
 		// Organize entities by type
 		switch result.Node.Type {
-		case graphragpb.NodeType_NODE_TYPE_HOST:
+		case "host":
 			hosts = append(hosts, props)
-		case graphragpb.NodeType_NODE_TYPE_PORT:
+		case "port":
 			ports = append(ports, props)
-		case graphragpb.NodeType_NODE_TYPE_ENDPOINT:
+		case "endpoint":
 			endpoints = append(endpoints, props)
-		case graphragpb.NodeType_NODE_TYPE_TECHNOLOGY:
+		case "technology":
 			technologies = append(technologies, props)
-		case graphragpb.NodeType_NODE_TYPE_FINDING:
+		case "finding":
 			findings = append(findings, props)
 		default:
 			logger.Warn("Unknown node type in phase query",
 				"type", result.Node.Type,
-				"node_id", result.NodeId,
+				"node_id", result.Node.Id,
 			)
 		}
 	}
@@ -380,26 +380,22 @@ func (g *DefaultIntelligenceGenerator) storeIntelligenceNode(ctx context.Context
 		return "", fmt.Errorf("failed to marshal intelligence to JSON: %w", err)
 	}
 
-	// Convert confidence to string for proto map[string]string
-	confidenceStr := fmt.Sprintf("%.2f", intel.Confidence)
-	sourceNodeCountStr := fmt.Sprintf("%d", intel.SourceNodeCount)
-
 	// Create intelligence node using proto types
 	node := &graphragpb.GraphNode{
-		Type:    graphragpb.NodeType_NODE_TYPE_UNSPECIFIED, // Custom type for intelligence
-		Content: intel.Summary,                             // Use summary as content for semantic search
-		Properties: map[string]string{
-			"node_type":          "Intelligence",
-			"mission_id":         intel.MissionID,
-			"phase":              intel.Phase,
-			"summary":            intel.Summary,
-			"risk_assessment":    intel.RiskAssessment,
-			"confidence":         confidenceStr,
-			"source_node_count":  sourceNodeCountStr,
-			"source_llm_call_id": intel.SourceLLMCallID,
-			"model":              intel.Model,
-			"timestamp":          intel.Timestamp.Format(time.RFC3339),
-			"full_intelligence":  string(intelJSON), // Store complete intelligence as JSON
+		Type:    "intelligence", // Custom type for intelligence
+		Content: intel.Summary,  // Use summary as content for semantic search
+		Properties: map[string]*graphragpb.Value{
+			"node_type":          {Kind: &graphragpb.Value_StringValue{StringValue: "Intelligence"}},
+			"mission_id":         {Kind: &graphragpb.Value_StringValue{StringValue: intel.MissionID}},
+			"phase":              {Kind: &graphragpb.Value_StringValue{StringValue: intel.Phase}},
+			"summary":            {Kind: &graphragpb.Value_StringValue{StringValue: intel.Summary}},
+			"risk_assessment":    {Kind: &graphragpb.Value_StringValue{StringValue: intel.RiskAssessment}},
+			"confidence":         {Kind: &graphragpb.Value_DoubleValue{DoubleValue: intel.Confidence}},
+			"source_node_count":  {Kind: &graphragpb.Value_IntValue{IntValue: int64(intel.SourceNodeCount)}},
+			"source_llm_call_id": {Kind: &graphragpb.Value_StringValue{StringValue: intel.SourceLLMCallID}},
+			"model":              {Kind: &graphragpb.Value_StringValue{StringValue: intel.Model}},
+			"timestamp":          {Kind: &graphragpb.Value_StringValue{StringValue: intel.Timestamp.Format(time.RFC3339)}},
+			"full_intelligence":  {Kind: &graphragpb.Value_StringValue{StringValue: string(intelJSON)}},
 		},
 	}
 
