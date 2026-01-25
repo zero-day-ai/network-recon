@@ -1,4 +1,4 @@
-module github.com/zero-day-ai/agents/network-recon
+module github.com/zero-day-ai/network-recon
 
 go 1.24.4
 

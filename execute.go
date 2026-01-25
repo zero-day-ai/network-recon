@@ -7,9 +7,9 @@ import (
 
 	"github.com/zero-day-ai/sdk/agent"
 
-	"github.com/zero-day-ai/agents/network-recon/internal/intelligence"
-	"github.com/zero-day-ai/agents/network-recon/internal/network"
-	"github.com/zero-day-ai/agents/network-recon/internal/recon"
+	"github.com/zero-day-ai/network-recon/internal/intelligence"
+	"github.com/zero-day-ai/network-recon/internal/network"
+	"github.com/zero-day-ai/network-recon/internal/recon"
 )
 
 // executeRecon is the main execution function for the network-recon agent.
