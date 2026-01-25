@@ -9,7 +9,6 @@ import (
 	"github.com/zero-day-ai/sdk/agent"
 	"github.com/zero-day-ai/sdk/api/gen/graphragpb"
 	"github.com/zero-day-ai/sdk/api/gen/toolspb"
-	"github.com/zero-day-ai/sdk/graphrag/domain"
 )
 
 // DefaultReconRunner implements the ReconRunner interface using the agent harness
@@ -38,7 +37,7 @@ func (r *DefaultReconRunner) RunPhase(ctx context.Context, phase Phase, targets 
 		Phase:       phase,
 		ToolsRun:    []string{},
 		Errors:      []error{},
-		Discoveries: domain.NewEmptyDiscoveryResult(),
+		Discoveries: &graphragpb.DiscoveryResult{},
 	}
 
 	logger.InfoContext(ctx, "starting reconnaissance phase",
@@ -59,7 +58,7 @@ func (r *DefaultReconRunner) RunPhase(ctx context.Context, phase Phase, targets 
 	}
 
 	// Count nodes created in this phase
-	result.NodesCreated = result.Discoveries.NodeCount()
+	result.NodesCreated = countDiscoveryNodes(result.Discoveries)
 
 	result.Duration = time.Since(startTime)
 
@@ -78,7 +77,7 @@ func (r *DefaultReconRunner) RunPhase(ctx context.Context, phase Phase, targets 
 // runDiscoverPhase executes the discover phase:
 // 1. First runs nmap ping scan (-sn) to find live hosts
 // 2. Then runs nmap port scan only against live hosts
-func (r *DefaultReconRunner) runDiscoverPhase(ctx context.Context, targets []string, result *PhaseResult, discoveries *domain.DiscoveryResult) {
+func (r *DefaultReconRunner) runDiscoverPhase(ctx context.Context, targets []string, result *PhaseResult, discoveries *graphragpb.DiscoveryResult) {
 	logger := r.harness.Logger()
 
 	for _, target := range targets {
@@ -182,7 +181,7 @@ func extractLiveHostsFromNmapProto(resp *toolspb.NmapResponse) []string {
 }
 
 // runProbePhase executes the probe phase using httpx.
-func (r *DefaultReconRunner) runProbePhase(ctx context.Context, targets []string, result *PhaseResult, discoveries *domain.DiscoveryResult) {
+func (r *DefaultReconRunner) runProbePhase(ctx context.Context, targets []string, result *PhaseResult, discoveries *graphragpb.DiscoveryResult) {
 	logger := r.harness.Logger()
 
 	if len(targets) == 0 {
@@ -217,7 +216,7 @@ func (r *DefaultReconRunner) runProbePhase(ctx context.Context, targets []string
 // runDomainPhase executes the domain phase.
 // Note: subfinder and amass support removed - they lack proto definitions.
 // Domain enumeration will need to be added back when proto definitions are available.
-func (r *DefaultReconRunner) runDomainPhase(ctx context.Context, targets []string, result *PhaseResult, discoveries *domain.DiscoveryResult) {
+func (r *DefaultReconRunner) runDomainPhase(ctx context.Context, targets []string, result *PhaseResult, discoveries *graphragpb.DiscoveryResult) {
 	logger := r.harness.Logger()
 
 	if len(targets) == 0 {
@@ -240,7 +239,7 @@ func (r *DefaultReconRunner) RunAll(ctx context.Context, subnet string, domains 
 
 	result := &ReconResult{
 		Phases:      []*PhaseResult{},
-		Discoveries: domain.NewEmptyDiscoveryResult(),
+		Discoveries: &graphragpb.DiscoveryResult{},
 	}
 
 	logger.InfoContext(ctx, "starting full reconnaissance workflow",
@@ -290,13 +289,13 @@ func (r *DefaultReconRunner) RunAll(ctx context.Context, subnet string, domains 
 
 		// Merge phase discoveries into overall result
 		if phaseResult.Discoveries != nil {
-			result.Discoveries.Proto.Hosts = append(result.Discoveries.Proto.Hosts, phaseResult.Discoveries.Hosts()...)
-			result.Discoveries.Proto.Ports = append(result.Discoveries.Proto.Ports, phaseResult.Discoveries.Ports()...)
-			result.Discoveries.Proto.Services = append(result.Discoveries.Proto.Services, phaseResult.Discoveries.Services()...)
-			result.Discoveries.Proto.Endpoints = append(result.Discoveries.Proto.Endpoints, phaseResult.Discoveries.Endpoints()...)
-			result.Discoveries.Proto.Domains = append(result.Discoveries.Proto.Domains, phaseResult.Discoveries.Domains()...)
-			result.Discoveries.Proto.Subdomains = append(result.Discoveries.Proto.Subdomains, phaseResult.Discoveries.Subdomains()...)
-			result.Discoveries.Proto.Technologies = append(result.Discoveries.Proto.Technologies, phaseResult.Discoveries.Technologies()...)
+			result.Discoveries.Hosts = append(result.Discoveries.Hosts, phaseResult.Discoveries.Hosts...)
+			result.Discoveries.Ports = append(result.Discoveries.Ports, phaseResult.Discoveries.Ports...)
+			result.Discoveries.Services = append(result.Discoveries.Services, phaseResult.Discoveries.Services...)
+			result.Discoveries.Endpoints = append(result.Discoveries.Endpoints, phaseResult.Discoveries.Endpoints...)
+			result.Discoveries.Domains = append(result.Discoveries.Domains, phaseResult.Discoveries.Domains...)
+			result.Discoveries.Subdomains = append(result.Discoveries.Subdomains, phaseResult.Discoveries.Subdomains...)
+			result.Discoveries.Technologies = append(result.Discoveries.Technologies, phaseResult.Discoveries.Technologies...)
 		}
 	}
 
@@ -359,7 +358,7 @@ func marshalInput(input map[string]any) string {
 
 // parseDiscoverOutput parses nmap/masscan output and extracts hosts, ports, and services (legacy map-based).
 // Expected format: {"hosts": [{"ip": "x.x.x.x", "hostname": "...", "state": "up", "ports": [...]}]}
-func parseDiscoverOutput(output any, discoveries *domain.DiscoveryResult) {
+func parseDiscoverOutput(output any, discoveries *graphragpb.DiscoveryResult) {
 	if output == nil {
 		return
 	}
@@ -398,7 +397,7 @@ func parseDiscoverOutput(output any, discoveries *domain.DiscoveryResult) {
 		if os := getStringField(hostMap, "os"); os != "" {
 			hostProto.Os = &os
 		}
-		discoveries.AddHost(hostProto)
+		discoveries.Hosts = append(discoveries.Hosts, hostProto)
 
 		// Extract ports
 		if portsArr, ok := hostMap["ports"].([]any); ok {
@@ -423,7 +422,7 @@ func parseDiscoverOutput(output any, discoveries *domain.DiscoveryResult) {
 				if state := getStringField(portMap, "state"); state != "" {
 					portProto.State = &state
 				}
-				discoveries.AddPort(portProto)
+				discoveries.Ports = append(discoveries.Ports, portProto)
 
 				// Extract service if present
 				serviceName := getStringField(portMap, "service")
@@ -439,7 +438,7 @@ func parseDiscoverOutput(output any, discoveries *domain.DiscoveryResult) {
 					if banner := getStringField(portMap, "banner"); banner != "" {
 						serviceProto.Banner = &banner
 					}
-					discoveries.AddService(serviceProto)
+					discoveries.Services = append(discoveries.Services, serviceProto)
 				}
 			}
 		}
@@ -447,7 +446,7 @@ func parseDiscoverOutput(output any, discoveries *domain.DiscoveryResult) {
 }
 
 // parseDiscoverOutputProto parses nmap proto response and extracts hosts, ports, and services.
-func parseDiscoverOutputProto(resp *toolspb.NmapResponse, discoveries *domain.DiscoveryResult) {
+func parseDiscoverOutputProto(resp *toolspb.NmapResponse, discoveries *graphragpb.DiscoveryResult) {
 	if resp == nil {
 		return
 	}
@@ -473,7 +472,7 @@ func parseDiscoverOutputProto(resp *toolspb.NmapResponse, discoveries *domain.Di
 			hostProto.Os = &nmapHost.OsMatches[0].Name
 		}
 
-		discoveries.AddHost(hostProto)
+		discoveries.Hosts = append(discoveries.Hosts, hostProto)
 
 		// Extract ports
 		for _, nmapPort := range nmapHost.Ports {
@@ -490,7 +489,7 @@ func parseDiscoverOutputProto(resp *toolspb.NmapResponse, discoveries *domain.Di
 			if nmapPort.State != "" {
 				portProto.State = &nmapPort.State
 			}
-			discoveries.AddPort(portProto)
+			discoveries.Ports = append(discoveries.Ports, portProto)
 
 			// Extract service if present
 			if nmapPort.Service != nil && nmapPort.Service.Name != "" {
@@ -505,7 +504,7 @@ func parseDiscoverOutputProto(resp *toolspb.NmapResponse, discoveries *domain.Di
 				if nmapPort.Service.Product != "" {
 					serviceProto.Banner = &nmapPort.Service.Product
 				}
-				discoveries.AddService(serviceProto)
+				discoveries.Services = append(discoveries.Services, serviceProto)
 			}
 		}
 	}
@@ -513,7 +512,7 @@ func parseDiscoverOutputProto(resp *toolspb.NmapResponse, discoveries *domain.Di
 
 // parseProbeOutput parses httpx output and extracts endpoints and technologies (legacy map-based).
 // Expected format: {"results": [{"url": "...", "status_code": 200, "title": "...", "technologies": [...]}]}
-func parseProbeOutput(output any, discoveries *domain.DiscoveryResult) {
+func parseProbeOutput(output any, discoveries *graphragpb.DiscoveryResult) {
 	if output == nil {
 		return
 	}
@@ -555,7 +554,7 @@ func parseProbeOutput(output any, discoveries *domain.DiscoveryResult) {
 						Name:    techName,
 						Version: &version,
 					}
-					discoveries.AddTechnology(techProto)
+					discoveries.Technologies = append(discoveries.Technologies, techProto)
 				}
 			}
 		}
@@ -563,7 +562,7 @@ func parseProbeOutput(output any, discoveries *domain.DiscoveryResult) {
 }
 
 // parseProbeOutputProto parses httpx proto response and extracts endpoints and technologies.
-func parseProbeOutputProto(resp *toolspb.HttpxResponse, discoveries *domain.DiscoveryResult) {
+func parseProbeOutputProto(resp *toolspb.HttpxResponse, discoveries *graphragpb.DiscoveryResult) {
 	if resp == nil {
 		return
 	}
@@ -589,14 +588,14 @@ func parseProbeOutputProto(resp *toolspb.HttpxResponse, discoveries *domain.Disc
 				Name:    tech.Name,
 				Version: &version,
 			}
-			discoveries.AddTechnology(techProto)
+			discoveries.Technologies = append(discoveries.Technologies, techProto)
 		}
 	}
 }
 
 // parseDomainOutput parses subfinder/amass output and extracts subdomains.
 // Expected format: {"subdomains": ["sub1.example.com", "sub2.example.com"]} or {"results": [...]}
-func parseDomainOutput(output any, parentDomain string, discoveries *domain.DiscoveryResult) {
+func parseDomainOutput(output any, parentDomain string, discoveries *graphragpb.DiscoveryResult) {
 	if output == nil {
 		return
 	}
@@ -632,8 +631,18 @@ func parseDomainOutput(output any, parentDomain string, discoveries *domain.Disc
 		// Set full name as subdomain.parentdomain format
 		fullName := subName + "." + parentDomain
 		subProto.FullName = &fullName
-		discoveries.Proto.Subdomains = append(discoveries.Proto.Subdomains, subProto)
+		discoveries.Subdomains = append(discoveries.Subdomains, subProto)
 	}
+}
+
+// countDiscoveryNodes counts the total number of nodes in a DiscoveryResult
+func countDiscoveryNodes(d *graphragpb.DiscoveryResult) int {
+	if d == nil {
+		return 0
+	}
+	return len(d.Hosts) + len(d.Ports) + len(d.Services) + len(d.Endpoints) +
+		len(d.Domains) + len(d.Subdomains) + len(d.Technologies) +
+		len(d.Certificates) + len(d.Findings) + len(d.Evidence)
 }
 
 // Helper functions to safely extract fields from maps

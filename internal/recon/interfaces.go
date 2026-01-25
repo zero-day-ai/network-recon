@@ -14,7 +14,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/zero-day-ai/sdk/graphrag/domain"
+	"github.com/zero-day-ai/sdk/api/gen/graphragpb"
 )
 
 // Phase represents a distinct stage in the reconnaissance lifecycle.
@@ -103,9 +103,9 @@ type PhaseResult struct {
 	// A nil or empty Errors slice indicates complete success.
 	Errors []error
 
-	// Discoveries contains the SDK domain types discovered in this phase.
+	// Discoveries contains the proto types discovered in this phase.
 	// This is aggregated into the overall ReconResult.Discoveries.
-	Discoveries *domain.DiscoveryResult
+	Discoveries *graphragpb.DiscoveryResult
 }
 
 // ReconResult contains aggregated results and statistics for a complete reconnaissance operation
@@ -132,7 +132,7 @@ type ReconResult struct {
 	// This is the sum of all phase durations plus inter-phase coordination overhead.
 	Duration time.Duration
 
-	// Discoveries contains all discovered assets as SDK domain types.
+	// Discoveries contains all discovered assets as proto types.
 	// This is returned to Gibson's harness for automatic graph node creation.
-	Discoveries *domain.DiscoveryResult
+	Discoveries *graphragpb.DiscoveryResult
 }
