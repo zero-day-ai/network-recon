@@ -8,7 +8,9 @@ import (
 
 	"github.com/zero-day-ai/sdk/agent"
 	"github.com/zero-day-ai/sdk/api/gen/graphragpb"
+	"github.com/zero-day-ai/sdk/api/gen/taxonomypb"
 	"github.com/zero-day-ai/sdk/api/gen/toolspb"
+	"github.com/zero-day-ai/sdk/graphrag"
 )
 
 // DefaultReconRunner implements the ReconRunner interface using the agent harness
@@ -356,6 +358,65 @@ func marshalInput(input map[string]any) string {
 	return string(b)
 }
 
+// Conversion helpers from taxonomypb to graphragpb types
+// TODO: This is a temporary bridge until the codebase fully migrates to taxonomypb
+// These handle field name differences between the two proto systems:
+// - taxonomypb uses ParentXxxId (e.g., ParentHostId)
+// - graphragpb uses XxxId (e.g., HostId)
+
+func taxonomyHostToGraphRAG(t *taxonomypb.Host) *graphragpb.Host {
+	g := &graphragpb.Host{}
+	g.Id = &t.Id
+	if t.Ip != nil {
+		g.Ip = *t.Ip
+	}
+	g.Hostname = t.Hostname
+	g.State = t.State
+	g.Os = t.Os
+	g.OsVersion = t.OsVersion
+	g.MacAddress = t.MacAddress
+	return g
+}
+
+func taxonomyPortToGraphRAG(t *taxonomypb.Port) *graphragpb.Port {
+	g := &graphragpb.Port{}
+	g.Id = &t.Id
+	g.Number = t.Number
+	g.Protocol = t.Protocol
+	g.HostId = t.ParentHostId // Map ParentHostId -> HostId
+	g.State = t.State
+	return g
+}
+
+func taxonomyServiceToGraphRAG(t *taxonomypb.Service) *graphragpb.Service {
+	g := &graphragpb.Service{}
+	g.Id = &t.Id
+	g.Name = t.Name
+	g.PortId = t.ParentPortId // Map ParentPortId -> PortId
+	g.Product = t.Product
+	g.Version = t.Version
+	g.ExtraInfo = t.ExtraInfo
+	return g
+}
+
+func taxonomyTechnologyToGraphRAG(t *taxonomypb.Technology) *graphragpb.Technology {
+	g := &graphragpb.Technology{}
+	g.Id = &t.Id
+	g.Name = t.Name
+	g.Version = t.Version
+	g.Category = t.Category
+	return g
+}
+
+func taxonomySubdomainToGraphRAG(t *taxonomypb.Subdomain) *graphragpb.Subdomain {
+	g := &graphragpb.Subdomain{}
+	g.Id = &t.Id
+	g.Name = t.Name
+	g.DomainId = t.ParentDomainId // Map ParentDomainId -> DomainId
+	g.FullName = t.FullName
+	return g
+}
+
 // parseDiscoverOutput parses nmap/masscan output and extracts hosts, ports, and services (legacy map-based).
 // Expected format: {"hosts": [{"ip": "x.x.x.x", "hostname": "...", "state": "up", "ports": [...]}]}
 func parseDiscoverOutput(output any, discoveries *graphragpb.DiscoveryResult) {
@@ -384,10 +445,12 @@ func parseDiscoverOutput(output any, discoveries *graphragpb.DiscoveryResult) {
 			continue
 		}
 
-		// Create host proto for discovery result
+		// Create host proto using SDK helper for UUID generation
 		hostProto := &graphragpb.Host{
 			Ip: ip,
 		}
+		// Note: graphragpb.Host uses optional string id, so we generate UUID manually
+		// TODO: Consider migrating to taxonomypb types which have required string id
 		if hostname := getStringField(hostMap, "hostname"); hostname != "" {
 			hostProto.Hostname = &hostname
 		}
@@ -456,23 +519,23 @@ func parseDiscoverOutputProto(resp *toolspb.NmapResponse, discoveries *graphragp
 			continue
 		}
 
-		// Create host proto
-		hostProto := &graphragpb.Host{
-			Ip: nmapHost.Ip,
-		}
+		// Create host using SDK helper for UUID generation and field setup
+		host := graphrag.NewHost()
+		host.Ip = &nmapHost.Ip
 		if nmapHost.Hostname != "" {
-			hostProto.Hostname = &nmapHost.Hostname
+			host.Hostname = &nmapHost.Hostname
 		}
 		if nmapHost.State != "" {
-			hostProto.State = &nmapHost.State
+			host.State = &nmapHost.State
 		}
 
 		// Extract OS from OS matches if available
 		if len(nmapHost.OsMatches) > 0 && nmapHost.OsMatches[0].Name != "" {
-			hostProto.Os = &nmapHost.OsMatches[0].Name
+			host.Os = &nmapHost.OsMatches[0].Name
 		}
 
-		discoveries.Hosts = append(discoveries.Hosts, hostProto)
+		// Convert taxonomypb.Host to graphragpb.Host
+		discoveries.Hosts = append(discoveries.Hosts, taxonomyHostToGraphRAG(host))
 
 		// Extract ports
 		for _, nmapPort := range nmapHost.Ports {
@@ -480,31 +543,29 @@ func parseDiscoverOutputProto(resp *toolspb.NmapResponse, discoveries *graphragp
 				continue
 			}
 
-			// Create port proto
-			portProto := &graphragpb.Port{
-				Number:   nmapPort.Number,
-				Protocol: nmapPort.Protocol,
-				HostId:   nmapHost.Ip,
-			}
+			// Create port using SDK helper - auto-generates UUID and wires parent ID
+			port := graphrag.NewPort(host, nmapPort.Number, nmapPort.Protocol)
 			if nmapPort.State != "" {
-				portProto.State = &nmapPort.State
+				port.State = &nmapPort.State
 			}
-			discoveries.Ports = append(discoveries.Ports, portProto)
+
+			// Convert taxonomypb.Port to graphragpb.Port
+			discoveries.Ports = append(discoveries.Ports, taxonomyPortToGraphRAG(port))
 
 			// Extract service if present
 			if nmapPort.Service != nil && nmapPort.Service.Name != "" {
-				serviceProto := &graphragpb.Service{
-					Name:   nmapPort.Service.Name,
-					PortId: fmt.Sprintf("%s:%d/%s", nmapHost.Ip, nmapPort.Number, nmapPort.Protocol),
-				}
+				// Create service using SDK helper - auto-generates UUID and wires parent port ID
+				service := graphrag.NewService(port, nmapPort.Service.Name)
 				if nmapPort.Service.Version != "" {
-					serviceProto.Version = &nmapPort.Service.Version
+					service.Version = &nmapPort.Service.Version
 				}
 				// Note: NmapService doesn't have a Banner field in proto, using Product as alternative
 				if nmapPort.Service.Product != "" {
-					serviceProto.Banner = &nmapPort.Service.Product
+					service.ExtraInfo = &nmapPort.Service.Product
 				}
-				discoveries.Services = append(discoveries.Services, serviceProto)
+
+				// Convert taxonomypb.Service to graphragpb.Service
+				discoveries.Services = append(discoveries.Services, taxonomyServiceToGraphRAG(service))
 			}
 		}
 	}
@@ -578,17 +639,18 @@ func parseProbeOutputProto(resp *toolspb.HttpxResponse, discoveries *graphragpb.
 				continue
 			}
 
+			// Create technology using SDK helper for UUID generation
+			technology := graphrag.NewTechnology(tech.Name)
+
 			// Use version from proto, or "unknown" if empty
 			version := tech.Version
 			if version == "" {
 				version = "unknown"
 			}
+			technology.Version = &version
 
-			techProto := &graphragpb.Technology{
-				Name:    tech.Name,
-				Version: &version,
-			}
-			discoveries.Technologies = append(discoveries.Technologies, techProto)
+			// Convert taxonomypb.Technology to graphragpb.Technology
+			discoveries.Technologies = append(discoveries.Technologies, taxonomyTechnologyToGraphRAG(technology))
 		}
 	}
 }
@@ -622,16 +684,20 @@ func parseDomainOutput(output any, parentDomain string, discoveries *graphragpb.
 		}
 	}
 
-	// Create subdomain nodes
+	// Create parent domain first (needed for subdomain helper)
+	domain := graphrag.NewDomain(parentDomain)
+
+	// Create subdomain nodes using SDK helper
 	for _, subName := range subdomains {
-		subProto := &graphragpb.Subdomain{
-			Name:         subName,
-			ParentDomain: parentDomain,
-		}
+		// Create subdomain using SDK helper - auto-generates UUID and wires parent domain ID
+		subdomain := graphrag.NewSubdomain(domain, subName)
+
 		// Set full name as subdomain.parentdomain format
 		fullName := subName + "." + parentDomain
-		subProto.FullName = &fullName
-		discoveries.Subdomains = append(discoveries.Subdomains, subProto)
+		subdomain.FullName = &fullName
+
+		// Convert taxonomypb.Subdomain to graphragpb.Subdomain
+		discoveries.Subdomains = append(discoveries.Subdomains, taxonomySubdomainToGraphRAG(subdomain))
 	}
 }
 

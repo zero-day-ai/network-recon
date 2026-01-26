@@ -8,6 +8,8 @@ require (
 	google.golang.org/protobuf v1.36.11
 )
 
+replace github.com/zero-day-ai/sdk => ../../../opensource/sdk
+
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/coreos/go-semver v0.3.1 // indirect
