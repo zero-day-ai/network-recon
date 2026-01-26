@@ -93,6 +93,9 @@ func executeRecon(ctx context.Context, h agent.Harness, task agent.Task) (agent.
 		"total_hosts", reconResult.TotalHosts,
 		"total_ports", reconResult.TotalPorts,
 		"total_endpoints", reconResult.TotalEndpoints,
+		"hosts_in_result", len(reconResult.Discoveries.Hosts),
+		"ports_in_result", len(reconResult.Discoveries.Ports),
+		"services_in_result", len(reconResult.Discoveries.Services),
 		"duration", reconResult.Duration.String(),
 	)
 

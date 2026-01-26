@@ -116,7 +116,7 @@ func (r *DefaultReconRunner) runDiscoverPhase(ctx context.Context, targets []str
 
 			nmapReq := &toolspb.NmapRequest{
 				Targets:          []string{host},
-				Ports:            "1-1000",
+				Ports:            "1-10000,49152-65535",  // Common ports + ephemeral range
 				ScanType:         toolspb.ScanType_SCAN_TYPE_CONNECT,
 				ServiceDetection: true,
 				Timing:           toolspb.TimingTemplate_TIMING_TEMPLATE_AGGRESSIVE,
@@ -325,26 +325,22 @@ func (r *DefaultReconRunner) extractProbeTargets(ctx context.Context) ([]string,
 // Helper functions to count specific entity types from phase results
 
 func countHosts(result *PhaseResult) int {
-	if result.Phase == PhaseDiscover {
-		// Approximate: NodesCreated includes both hosts and ports
-		// In discover phase, roughly half are hosts (the other half are ports)
-		return result.NodesCreated / 2
+	if result.Discoveries != nil {
+		return len(result.Discoveries.Hosts)
 	}
 	return 0
 }
 
 func countPorts(result *PhaseResult) int {
-	if result.Phase == PhaseDiscover {
-		// Approximate: roughly half of nodes created in discover are ports
-		return result.NodesCreated / 2
+	if result.Discoveries != nil {
+		return len(result.Discoveries.Ports)
 	}
 	return 0
 }
 
 func countEndpoints(result *PhaseResult) int {
-	if result.Phase == PhaseProbe {
-		// In probe phase, endpoints are the primary node type
-		return result.NodesCreated / 2 // Approximate: half are endpoints, half are technologies
+	if result.Discoveries != nil {
+		return len(result.Discoveries.Endpoints)
 	}
 	return 0
 }
