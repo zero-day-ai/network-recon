@@ -9,38 +9,26 @@ import (
 
 // ReconConfig holds configuration for network reconnaissance execution
 type ReconConfig struct {
-	// Network targeting
-	Subnet  string   // CIDR notation, auto-discovered if empty
-	Domains []string // Domain names for reconnaissance
+	// Target specifies what to scan (CIDR notation, IP range, or hostname)
+	Target string
 
-	// Phase control
-	SkipPhases []string // Phases to skip: "discover", "probe", "domain"
+	// MaxIterations limits the number of autonomous loop iterations
+	MaxIterations int
 
-	// Intelligence
-	GenerateIntelligence bool // Run LLM analysis after recon
+	// Timeout is the overall execution timeout for the agent
+	Timeout time.Duration
 
-	// Limits
-	MaxHosts    int           // Max hosts to scan
-	ScanTimeout time.Duration // Per-phase timeout
-
-	// Safety
-	DemoMode bool // Skip actual network calls for testing
-
-	// Output
+	// Verbose enables detailed logging output
 	Verbose bool
 }
 
 // DefaultReconConfig returns a ReconConfig with sensible defaults
 func DefaultReconConfig() *ReconConfig {
 	return &ReconConfig{
-		Subnet:               "", // Auto-discover if empty
-		Domains:              []string{},
-		SkipPhases:           []string{},
-		GenerateIntelligence: true,
-		MaxHosts:             25,
-		ScanTimeout:          5 * time.Minute,
-		DemoMode:             false,
-		Verbose:              false,
+		Target:        "", // Must be provided by user
+		MaxIterations: 10,
+		Timeout:       30 * time.Minute,
+		Verbose:       false,
 	}
 }
 
@@ -57,7 +45,7 @@ func ParseConfig(task agent.Task) (*ReconConfig, error) {
 		configMap[k] = v
 	}
 
-	// Parse configuration from merged map
+	// If no config provided, validate and return defaults
 	if len(configMap) == 0 {
 		if err := cfg.Validate(); err != nil {
 			return nil, err
@@ -65,55 +53,28 @@ func ParseConfig(task agent.Task) (*ReconConfig, error) {
 		return cfg, nil
 	}
 
-	// Parse subnet
-	if subnet, ok := configMap["subnet"].(string); ok {
-		cfg.Subnet = subnet
+	// Parse target (with backward compatibility for "subnet")
+	if target, ok := configMap["target"].(string); ok {
+		cfg.Target = target
+	} else if subnet, ok := configMap["subnet"].(string); ok {
+		// Backward compatibility: accept "subnet" as alias for "target"
+		cfg.Target = subnet
 	}
 
-	// Parse domains
-	if domains, ok := configMap["domains"].([]interface{}); ok {
-		cfg.Domains = make([]string, 0, len(domains))
-		for _, domain := range domains {
-			if domainName, ok := domain.(string); ok {
-				cfg.Domains = append(cfg.Domains, domainName)
-			}
-		}
+	// Parse max_iterations
+	if maxIter, ok := configMap["max_iterations"].(int); ok {
+		cfg.MaxIterations = maxIter
+	} else if maxIterFloat, ok := configMap["max_iterations"].(float64); ok {
+		cfg.MaxIterations = int(maxIterFloat)
 	}
 
-	// Parse skip_phases
-	if skipPhases, ok := configMap["skip_phases"].([]interface{}); ok {
-		cfg.SkipPhases = make([]string, 0, len(skipPhases))
-		for _, phase := range skipPhases {
-			if phaseName, ok := phase.(string); ok {
-				cfg.SkipPhases = append(cfg.SkipPhases, phaseName)
-			}
-		}
-	}
-
-	// Parse generate_intelligence
-	if generateIntel, ok := configMap["generate_intelligence"].(bool); ok {
-		cfg.GenerateIntelligence = generateIntel
-	}
-
-	// Parse max_hosts
-	if maxHosts, ok := configMap["max_hosts"].(int); ok {
-		cfg.MaxHosts = maxHosts
-	} else if maxHostsFloat, ok := configMap["max_hosts"].(float64); ok {
-		cfg.MaxHosts = int(maxHostsFloat)
-	}
-
-	// Parse scan_timeout
-	if timeout, ok := configMap["scan_timeout"].(string); ok {
+	// Parse timeout
+	if timeout, ok := configMap["timeout"].(string); ok {
 		if d, err := time.ParseDuration(timeout); err == nil {
-			cfg.ScanTimeout = d
+			cfg.Timeout = d
 		} else {
-			return nil, fmt.Errorf("invalid scan_timeout duration: %s", timeout)
+			return nil, fmt.Errorf("invalid timeout duration: %s", timeout)
 		}
-	}
-
-	// Parse demo_mode
-	if demoMode, ok := configMap["demo_mode"].(bool); ok {
-		cfg.DemoMode = demoMode
 	}
 
 	// Parse verbose
@@ -131,43 +92,26 @@ func ParseConfig(task agent.Task) (*ReconConfig, error) {
 
 // Validate checks if the configuration is valid
 func (c *ReconConfig) Validate() error {
-	// Validate skip_phases contains only valid phase names
-	validPhases := map[string]bool{
-		"discover": true,
-		"probe":    true,
-		"domain":   true,
-	}
-	for _, phase := range c.SkipPhases {
-		if !validPhases[phase] {
-			return fmt.Errorf("invalid phase name in skip_phases: %s (must be: discover, probe, or domain)", phase)
-		}
+	// Target is required
+	if c.Target == "" {
+		return fmt.Errorf("target is required (specify target subnet, IP range, or hostname)")
 	}
 
-	// Validate max_hosts
-	if c.MaxHosts <= 0 {
-		return fmt.Errorf("max_hosts must be positive, got %d", c.MaxHosts)
+	// Validate MaxIterations is positive
+	if c.MaxIterations <= 0 {
+		return fmt.Errorf("max_iterations must be positive, got %d", c.MaxIterations)
 	}
 
-	// Validate scan_timeout
-	if c.ScanTimeout <= 0 {
-		return fmt.Errorf("scan_timeout must be positive, got %v", c.ScanTimeout)
+	// Validate Timeout is positive
+	if c.Timeout <= 0 {
+		return fmt.Errorf("timeout must be positive, got %v", c.Timeout)
 	}
 
 	return nil
 }
 
-// ShouldRunPhase returns true if the given reconnaissance phase should be run
-func (c *ReconConfig) ShouldRunPhase(phase string) bool {
-	for _, skip := range c.SkipPhases {
-		if skip == phase {
-			return false
-		}
-	}
-	return true
-}
-
 // String returns a human-readable representation of the configuration
 func (c *ReconConfig) String() string {
-	return fmt.Sprintf("ReconConfig{subnet=%s, domains=%d, max_hosts=%d, verbose=%v}",
-		c.Subnet, len(c.Domains), c.MaxHosts, c.Verbose)
+	return fmt.Sprintf("ReconConfig{target=%s, max_iterations=%d, timeout=%v, verbose=%v}",
+		c.Target, c.MaxIterations, c.Timeout, c.Verbose)
 }

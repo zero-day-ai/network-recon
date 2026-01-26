@@ -45,10 +45,10 @@ func main() {
 			"domain-enumeration",
 		),
 
-		// LLM Slot - optional, only needed for intelligence generation
+		// LLM Slot - required for scan planning and analysis
 		sdk.WithLLMSlot("primary", llm.SlotRequirements{
 			MinContextWindow: 8000,
-			RequiredFeatures: []string{},
+			RequiredFeatures: []string{"json_mode"},
 			PreferredModels:  []string{"claude-sonnet-4-5-20250929", "gpt-4o-mini"},
 		}),
 
