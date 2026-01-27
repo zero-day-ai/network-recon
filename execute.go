@@ -3,11 +3,63 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/zero-day-ai/sdk/agent"
 	"github.com/zero-day-ai/sdk/api/gen/toolspb"
+	"google.golang.org/protobuf/proto"
 )
+
+// nmapStreamCallback implements agent.ToolStreamCallback for receiving nmap streaming events.
+// It logs progress, partial results, warnings, and errors during nmap execution.
+type nmapStreamCallback struct {
+	h      agent.Harness
+	ctx    context.Context
+	logger *slog.Logger
+}
+
+// OnProgress logs nmap scan progress at Info level.
+func (c *nmapStreamCallback) OnProgress(percent int, phase, message string) {
+	c.logger.InfoContext(c.ctx, "nmap progress",
+		"percent", percent,
+		"phase", phase,
+		"message", message,
+	)
+}
+
+// OnPartial logs partial nmap results and optionally updates working memory.
+// Incremental results could be stored in working memory to track discoveries in real-time.
+func (c *nmapStreamCallback) OnPartial(output proto.Message, incremental bool) {
+	if resp, ok := output.(*toolspb.NmapResponse); ok {
+		c.logger.InfoContext(c.ctx, "nmap partial result",
+			"hosts_found", len(resp.Hosts),
+			"incremental", incremental,
+		)
+		// Optionally update working memory with partial discoveries
+		// This could be useful for very large scans to track progress
+	}
+}
+
+// OnWarning logs non-fatal nmap warnings at Warn level.
+func (c *nmapStreamCallback) OnWarning(message, context string) {
+	c.logger.WarnContext(c.ctx, "nmap warning",
+		"message", message,
+		"context", context,
+	)
+}
+
+// OnError logs nmap errors at appropriate level based on fatality.
+func (c *nmapStreamCallback) OnError(err error, fatal bool) {
+	level := slog.LevelWarn
+	if fatal {
+		level = slog.LevelError
+	}
+	c.logger.Log(c.ctx, level, "nmap error",
+		"error", err,
+		"fatal", fatal,
+	)
+}
 
 // executeRecon is the main execution function for the network-recon agent.
 // It performs autonomous LLM-driven network reconnaissance in an iterative discovery loop.
@@ -102,7 +154,7 @@ func executeRecon(ctx context.Context, h agent.Harness, task agent.Task) (agent.
 			break
 		}
 
-		// Step 3c: Execute nmap scan via harness.CallToolProto
+		// Step 3c: Execute nmap scan with streaming support
 		logger.InfoContext(ctx, "executing nmap scan",
 			"iteration", iteration,
 			"targets", plan.Targets,
@@ -115,15 +167,35 @@ func executeRecon(ctx context.Context, h agent.Harness, task agent.Task) (agent.
 		}
 
 		nmapResponse := &toolspb.NmapResponse{}
-		err = h.CallToolProto(ctx, "nmap", nmapRequest, nmapResponse)
+
+		// Create streaming callback for real-time progress
+		callback := &nmapStreamCallback{
+			h:      h,
+			ctx:    ctx,
+			logger: logger,
+		}
+
+		// Try streaming execution first, fall back to unary if not available
+		err = h.CallToolProtoStream(ctx, "nmap", nmapRequest, nmapResponse, callback)
 		if err != nil {
-			logger.ErrorContext(ctx, "nmap scan failed",
+			// Check if error indicates streaming is not available
+			// In that case, fall back to regular CallToolProto
+			logger.WarnContext(ctx, "streaming nmap failed, falling back to unary execution",
 				"iteration", iteration,
 				"error", err,
 			)
-			// Continue to next iteration even if scan fails
-			h.Memory().Working().Set(ctx, "iteration", iteration+1)
-			continue
+
+			// Fallback to regular non-streaming call
+			err = h.CallToolProto(ctx, "nmap", nmapRequest, nmapResponse)
+			if err != nil {
+				logger.ErrorContext(ctx, "nmap scan failed",
+					"iteration", iteration,
+					"error", err,
+				)
+				// Continue to next iteration even if scan fails
+				h.Memory().Working().Set(ctx, "iteration", iteration+1)
+				continue
+			}
 		}
 
 		logger.InfoContext(ctx, "nmap scan complete",

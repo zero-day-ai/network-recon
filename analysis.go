@@ -227,6 +227,12 @@ Respond with JSON:
 - targets: array of targets for next scan (if continuing)
 - args: array of nmap arguments (if continuing)
 
+IMPORTANT CONSTRAINTS:
+- Use -sT (TCP connect scan) instead of -sS (SYN scan) - we don't have root privileges
+- Do NOT use -O (OS detection) - requires root privileges
+- Use -sV for service version detection (works without root)
+- Use -sC for default scripts (works without root)
+
 Consider:
 - What has already been scanned
 - What information gaps remain
